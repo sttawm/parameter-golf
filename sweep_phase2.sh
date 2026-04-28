@@ -2,7 +2,7 @@
 # Phase 2 sweep — run after untied-cosine λ=0.1 (sweep 2) completes.
 #
 # Parts:
-#   1. Untied cosine: λ=0 (baseline) + λ=0.4, 1.6, 6.4  (λ=0.1 already done in sweep 2)
+#   1. Untied cosine: λ=0 (baseline only; λ=0.1–6.4 already done in sweep 2)
 #   2. Tied L2:       λ=4, 16, 64, 256  (L2-calibrated: cosine/L2 ratio ≈62x at init, conservative half-step)
 #   3. Untied top-K:  λ=0.1, K=8, 32, 128  (compare approximation overhead vs full softmax)
 #
@@ -36,16 +36,14 @@ run() {
     echo "--- Done: ${run_id} ---"
 }
 
-# ── Part 1: Untied cosine ──────────────────────────────────────────────────────
+# ── Part 1: Untied cosine baseline ────────────────────────────────────────────
+# λ=0.1, 0.4, 1.6, 6.4 already covered by sweep 2 (221812); only baseline needed.
 echo ""
 echo "======================================================"
-echo " Part 1: Untied cosine  (baseline + λ=0.4, 1.6, 6.4)"
+echo " Part 1: Untied cosine baseline (λ=0)"
 echo "======================================================"
 
 run "untied_cos_baseline" TIE_EMBEDDINGS=0 EMBED_LOSS_LAMBDA=0.0
-run "untied_cos_0p4"      TIE_EMBEDDINGS=0 EMBED_LOSS_LAMBDA=0.4
-run "untied_cos_1p6"      TIE_EMBEDDINGS=0 EMBED_LOSS_LAMBDA=1.6
-run "untied_cos_6p4"      TIE_EMBEDDINGS=0 EMBED_LOSS_LAMBDA=6.4
 
 # ── Part 2: Tied L2 ───────────────────────────────────────────────────────────
 echo ""
