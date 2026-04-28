@@ -31,10 +31,10 @@ run_experiment() {
     echo "--- Done: ${run_id} ---"
 }
 
-run_experiment "0.0"  "baseline"
 run_experiment "0.1"  "lambda0p1"
-run_experiment "1.0"  "lambda1p0"
-run_experiment "5.0"  "lambda5p0"
+run_experiment "0.4"  "lambda0p4"
+run_experiment "1.6"  "lambda1p6"
+run_experiment "6.4"  "lambda6p4"
 
 echo ""
 echo "=== Sweep complete. Logs in logs/ ==="
