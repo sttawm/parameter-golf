@@ -96,6 +96,7 @@ class Hyperparameters:
 
     # Auxiliary embedding loss. Set EMBED_LOSS_LAMBDA=0 (default) for the unmodified baseline.
     embed_loss_lambda: float = float(os.environ.get("EMBED_LOSS_LAMBDA", "0.0"))
+    embed_loss_l2: bool = bool(int(os.environ.get("EMBED_LOSS_L2", "0")))
 
     out_dir: str = os.environ.get("OUT_DIR", "logs")
 
@@ -389,13 +390,14 @@ class GPT(nn.Module):
     # - tied embeddings for the LM head (the baseline default setup)
     def __init__(self, vocab_size: int, num_layers: int, dim: int, num_heads: int, num_kv_heads: int, mlp_mult: int,
                  logit_chunk_tokens: int, logit_softcap: float, rope_base: float, tied_embed_init_std: float,
-                 qk_gain_init: float, embed_loss_lambda: float = 0.0):
+                 qk_gain_init: float, embed_loss_lambda: float = 0.0, embed_loss_l2: bool = False):
         super().__init__()
         if logit_softcap <= 0.0:
             raise ValueError(f"logit_softcap must be positive, got {logit_softcap}")
         self.logit_chunk_tokens = logit_chunk_tokens
         self.logit_softcap = logit_softcap
         self.embed_loss_lambda = embed_loss_lambda  # Python float — baked into the compiled graph, not a model param
+        self.embed_loss_l2 = embed_loss_l2
 
         self.tok_emb = nn.Embedding(vocab_size, dim)
         self.num_encoder_layers = num_layers // 2
@@ -437,12 +439,13 @@ class GPT(nn.Module):
         return self.final_norm(x)
 
     def _embed_aux_loss(self, logits: mx.array, y: mx.array) -> mx.array:
-        # Cosine distance between the model's expected embedding (E^T p) and the ground-truth
-        # token embedding (E^T e_y). Uses the full softmax distribution, not argmax.
         E = self.tok_emb.weight.astype(mx.float32)
         p = mx.softmax(logits.astype(mx.float32), axis=-1)
         e_hat = p @ E
         e_gt = E[y]
+        if self.embed_loss_l2:
+            diff = e_hat - e_gt
+            return mx.mean(mx.sum(diff * diff, axis=-1))
         eps = 1e-8
         cos = mx.sum(e_hat * e_gt, axis=-1) / (
             mx.sqrt(mx.sum(e_hat * e_hat, axis=-1) + eps) *
@@ -938,6 +941,7 @@ def main() -> None:
         tied_embed_init_std=args.tied_embed_init_std,
         qk_gain_init=args.qk_gain_init,
         embed_loss_lambda=args.embed_loss_lambda,
+        embed_loss_l2=args.embed_loss_l2,
     )
     opt = SplitOptimizers(model, args)
 
@@ -989,7 +993,7 @@ def main() -> None:
         f"matrix_lr:{args.matrix_lr} scalar_lr:{args.scalar_lr} "
         f"muon_momentum:{args.muon_momentum} muon_steps:{args.muon_backend_steps}"
     )
-    log(f"embed_loss_lambda:{args.embed_loss_lambda}")
+    log(f"embed_loss_lambda:{args.embed_loss_lambda} embed_loss_l2:{args.embed_loss_l2}")
     log(f"val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path={args.tokenizer_path}")
     log(f"compute_dtype:{COMPUTE_DTYPE} compile:True")
     log(

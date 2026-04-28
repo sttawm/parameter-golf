@@ -11,9 +11,11 @@ LOG_EVERY="${TRAIN_LOG_EVERY:-20}"
 VAL_EVERY="${VAL_LOSS_EVERY:-500}"
 SEED="${SEED:-1337}"
 GPUS="${NPROC_PER_NODE:-1}"
+TIE_EMBED="${TIE_EMBEDDINGS:-1}"
+EMBED_L2="${EMBED_LOSS_L2:-0}"
 DATE_TAG=$(date +%Y%m%d_%H%M%S)
 
-echo "=== Embed-lambda sweep  date:${DATE_TAG}  wallclock:${WALLCLOCK}s  gpus:${GPUS} ==="
+echo "=== Embed-lambda sweep  date:${DATE_TAG}  wallclock:${WALLCLOCK}s  gpus:${GPUS}  tied:${TIE_EMBED}  l2:${EMBED_L2} ==="
 
 run_experiment() {
     local lambda="$1"
@@ -22,6 +24,8 @@ run_experiment() {
     echo ""
     echo "--- Starting: ${run_id}  EMBED_LOSS_LAMBDA=${lambda} ---"
     EMBED_LOSS_LAMBDA="${lambda}" \
+    TIE_EMBEDDINGS="${TIE_EMBED}" \
+    EMBED_LOSS_L2="${EMBED_L2}" \
     RUN_ID="${run_id}" \
     MAX_WALLCLOCK_SECONDS="${WALLCLOCK}" \
     TRAIN_LOG_EVERY="${LOG_EVERY}" \

@@ -86,6 +86,7 @@ class Hyperparameters:
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
     embed_loss_lambda: float = float(os.environ.get("EMBED_LOSS_LAMBDA", "0.0"))
+    embed_loss_l2: bool = bool(int(os.environ.get("EMBED_LOSS_L2", "0")))
 
 # -----------------------------
 # MUON OPTIMIZER 
@@ -661,6 +662,7 @@ class GPT(nn.Module):
         rope_base: float,
         qk_gain_init: float,
         embed_loss_lambda: float = 0.0,
+        embed_loss_l2: bool = False,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -669,6 +671,7 @@ class GPT(nn.Module):
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
         self.embed_loss_lambda = embed_loss_lambda
+        self.embed_loss_l2 = embed_loss_l2
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
@@ -723,11 +726,16 @@ class GPT(nn.Module):
         logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
         return x, logits
 
+    def _embed_output_matrix(self) -> Tensor:
+        return self.tok_emb.weight if self.tie_embeddings else self.lm_head.weight
+
     def _embed_aux_loss(self, logits: Tensor, targets: Tensor) -> Tensor:
-        E = self.tok_emb.weight.float()
+        E = self._embed_output_matrix().float()
         p = torch.softmax(logits.float(), dim=-1)
         e_hat = p @ E
         e_gt = E[targets]
+        if self.embed_loss_l2:
+            return ((e_hat - e_gt) ** 2).sum(dim=-1).mean()
         cos = F.cosine_similarity(e_hat, e_gt, dim=-1, eps=1e-8)
         return (1.0 - cos).mean()
 
@@ -862,6 +870,7 @@ def main() -> None:
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
         embed_loss_lambda=args.embed_loss_lambda,
+        embed_loss_l2=args.embed_loss_l2,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -935,7 +944,7 @@ def main() -> None:
         f"max_wallclock_seconds:{args.max_wallclock_seconds:.3f}"
     )
     log0(f"seed:{args.seed}")
-    log0(f"embed_loss_lambda:{args.embed_loss_lambda}")
+    log0(f"embed_loss_lambda:{args.embed_loss_lambda} embed_loss_l2:{args.embed_loss_l2}")
 
     # -----------------------------
     # DATA LOADER & MODEL WARMUP
