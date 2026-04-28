@@ -31,6 +31,7 @@ run_experiment() {
     echo "--- Done: ${run_id} ---"
 }
 
+run_experiment "0.0"  "baseline"
 run_experiment "0.1"  "lambda0p1"
 run_experiment "0.4"  "lambda0p4"
 run_experiment "1.6"  "lambda1p6"
