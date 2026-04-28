@@ -85,6 +85,7 @@ class Hyperparameters:
     beta2 = float(os.environ.get("BETA2", 0.95))
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
+    embed_loss_lambda: float = float(os.environ.get("EMBED_LOSS_LAMBDA", "0.0"))
 
 # -----------------------------
 # MUON OPTIMIZER 
@@ -659,6 +660,7 @@ class GPT(nn.Module):
         logit_softcap: float,
         rope_base: float,
         qk_gain_init: float,
+        embed_loss_lambda: float = 0.0,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -666,6 +668,7 @@ class GPT(nn.Module):
         self.tie_embeddings = tie_embeddings
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
+        self.embed_loss_lambda = embed_loss_lambda
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
@@ -697,13 +700,12 @@ class GPT(nn.Module):
             if isinstance(module, nn.Linear) and getattr(module, "_zero_init", False):
                 nn.init.zeros_(module.weight)
 
-    def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
+    def _get_logits(self, input_ids: Tensor) -> tuple[Tensor, Tensor]:
+        """Returns (flat_hidden, softcapped_logits)."""
         x = self.tok_emb(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
         x0 = x
         skips: list[Tensor] = []
-
-        # First half stores skips; second half reuses them in reverse order.
         for i in range(self.num_encoder_layers):
             x = self.blocks[i](x, x0)
             skips.append(x)
@@ -711,9 +713,7 @@ class GPT(nn.Module):
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
             x = self.blocks[self.num_encoder_layers + i](x, x0)
-
         x = self.final_norm(x).reshape(-1, x.size(-1))
-        targets = target_ids.reshape(-1)
         if self.tie_embeddings:
             logits_proj = F.linear(x, self.tok_emb.weight)
         else:
@@ -721,7 +721,33 @@ class GPT(nn.Module):
                 raise RuntimeError("lm_head is required when tie_embeddings=False")
             logits_proj = self.lm_head(x)
         logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
-        return F.cross_entropy(logits.float(), targets, reduction="mean")
+        return x, logits
+
+    def _embed_aux_loss(self, logits: Tensor, targets: Tensor) -> Tensor:
+        E = self.tok_emb.weight.float()
+        p = torch.softmax(logits.float(), dim=-1)
+        e_hat = p @ E
+        e_gt = E[targets]
+        cos = F.cosine_similarity(e_hat, e_gt, dim=-1, eps=1e-8)
+        return (1.0 - cos).mean()
+
+    def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
+        targets = target_ids.reshape(-1)
+        _, logits = self._get_logits(input_ids)
+        ce_loss = F.cross_entropy(logits.float(), targets, reduction="mean")
+        if self.embed_loss_lambda <= 0.0:
+            return ce_loss
+        return ce_loss + self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
+
+    @torch.no_grad()
+    def loss_components(self, input_ids: Tensor, target_ids: Tensor) -> tuple[Tensor, Tensor]:
+        """For logging only. Returns (ce_loss, embed_loss) without gradients."""
+        targets = target_ids.reshape(-1)
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            _, logits = self._get_logits(input_ids)
+        ce_loss = F.cross_entropy(logits.float(), targets, reduction="mean")
+        embed_loss = self._embed_aux_loss(logits, targets)
+        return ce_loss, embed_loss
 
 
 # -----------------------------
@@ -835,6 +861,7 @@ def main() -> None:
         logit_softcap=args.logit_softcap,
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
+        embed_loss_lambda=args.embed_loss_lambda,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -908,6 +935,7 @@ def main() -> None:
         f"max_wallclock_seconds:{args.max_wallclock_seconds:.3f}"
     )
     log0(f"seed:{args.seed}")
+    log0(f"embed_loss_lambda:{args.embed_loss_lambda}")
 
     # -----------------------------
     # DATA LOADER & MODEL WARMUP
@@ -1044,6 +1072,12 @@ def main() -> None:
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
                 f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
             )
+            if args.embed_loss_lambda > 0.0:
+                ce_l, emb_l = base_model.loss_components(x, y)
+                lam = args.embed_loss_lambda
+                ce_v, emb_v = ce_l.item(), emb_l.item()
+                embed_frac = (lam * emb_v) / (ce_v + lam * emb_v) if (ce_v + lam * emb_v) > 0 else 0.0
+                log0(f"step:{step} lambda:{lam:.4f} ce:{ce_v:.4f} embed:{emb_v:.4f} embed_frac:{embed_frac:.3f}")
 
         # Needed to sync whether we've reached the wallclock cap.
         reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms

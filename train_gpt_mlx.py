@@ -94,6 +94,9 @@ class Hyperparameters:
     muon_momentum_warmup_steps: int = int(os.environ.get("MUON_MOMENTUM_WARMUP_STEPS", 500))
     grad_clip_norm: float = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
 
+    # Auxiliary embedding loss. Set EMBED_LOSS_LAMBDA=0 (default) for the unmodified baseline.
+    embed_loss_lambda: float = float(os.environ.get("EMBED_LOSS_LAMBDA", "0.0"))
+
     out_dir: str = os.environ.get("OUT_DIR", "logs")
 
     @property
@@ -386,12 +389,13 @@ class GPT(nn.Module):
     # - tied embeddings for the LM head (the baseline default setup)
     def __init__(self, vocab_size: int, num_layers: int, dim: int, num_heads: int, num_kv_heads: int, mlp_mult: int,
                  logit_chunk_tokens: int, logit_softcap: float, rope_base: float, tied_embed_init_std: float,
-                 qk_gain_init: float):
+                 qk_gain_init: float, embed_loss_lambda: float = 0.0):
         super().__init__()
         if logit_softcap <= 0.0:
             raise ValueError(f"logit_softcap must be positive, got {logit_softcap}")
         self.logit_chunk_tokens = logit_chunk_tokens
         self.logit_softcap = logit_softcap
+        self.embed_loss_lambda = embed_loss_lambda  # Python float — baked into the compiled graph, not a model param
 
         self.tok_emb = nn.Embedding(vocab_size, dim)
         self.num_encoder_layers = num_layers // 2
@@ -432,6 +436,20 @@ class GPT(nn.Module):
             x = self.blocks[self.num_encoder_layers + i](x, x0)
         return self.final_norm(x)
 
+    def _embed_aux_loss(self, logits: mx.array, y: mx.array) -> mx.array:
+        # Cosine distance between the model's expected embedding (E^T p) and the ground-truth
+        # token embedding (E^T e_y). Uses the full softmax distribution, not argmax.
+        E = self.tok_emb.weight.astype(mx.float32)
+        p = mx.softmax(logits.astype(mx.float32), axis=-1)
+        e_hat = p @ E
+        e_gt = E[y]
+        eps = 1e-8
+        cos = mx.sum(e_hat * e_gt, axis=-1) / (
+            mx.sqrt(mx.sum(e_hat * e_hat, axis=-1) + eps) *
+            mx.sqrt(mx.sum(e_gt * e_gt, axis=-1) + eps)
+        )
+        return (1.0 - cos).mean()
+
     def loss(self, input_ids: mx.array, target_ids: mx.array) -> mx.array:
         # Cross-entropy over flattened tokens. We keep optional logit chunking because it is a useful
         # memory knob on Macs, but the common path is chunk_tokens=0 (single matmul + CE).
@@ -440,16 +458,35 @@ class GPT(nn.Module):
         if self.logit_chunk_tokens <= 0 or x.shape[0] <= self.logit_chunk_tokens:
             logits_proj = x @ self.tok_emb.weight.astype(x.dtype).T
             logits = self.softcap(logits_proj)
-            return nn.losses.cross_entropy(logits.astype(mx.float32), y, reduction="mean")
+            ce_loss = nn.losses.cross_entropy(logits.astype(mx.float32), y, reduction="mean")
+            if self.embed_loss_lambda <= 0.0:
+                return ce_loss
+            return ce_loss + self.embed_loss_lambda * self._embed_aux_loss(logits, y)
 
         loss_sum = mx.array(0.0, dtype=mx.float32)
+        embed_sum = mx.array(0.0, dtype=mx.float32)
         n = int(x.shape[0])
         for s in range(0, n, self.logit_chunk_tokens):
             e = min(s + self.logit_chunk_tokens, n)
             logits_proj = x[s:e] @ self.tok_emb.weight.astype(x.dtype).T
             logits = self.softcap(logits_proj)
             loss_sum = loss_sum + nn.losses.cross_entropy(logits.astype(mx.float32), y[s:e], reduction="sum")
-        return loss_sum / float(n)
+            if self.embed_loss_lambda > 0.0:
+                embed_sum = embed_sum + self._embed_aux_loss(logits, y[s:e]) * float(e - s)
+        ce_loss = loss_sum / float(n)
+        if self.embed_loss_lambda <= 0.0:
+            return ce_loss
+        return ce_loss + self.embed_loss_lambda * (embed_sum / float(n))
+
+    def loss_components(self, input_ids: mx.array, target_ids: mx.array) -> tuple[mx.array, mx.array]:
+        # Returns (ce_loss, embed_loss) for logging. Uses only the fast path — call at log intervals only.
+        x = self(input_ids).reshape(-1, self.tok_emb.weight.shape[1])
+        y = target_ids.reshape(-1)
+        logits = self.softcap(x @ self.tok_emb.weight.astype(x.dtype).T)
+        ce_loss = nn.losses.cross_entropy(logits.astype(mx.float32), y, reduction="mean")
+        embed_loss = self._embed_aux_loss(logits, y)
+        return ce_loss, embed_loss
+
 
 # ==============================================================================
 # OPTIMIZERS (MUON + ADAM SPLIT)
@@ -742,20 +779,23 @@ def loss_and_grad_chunked(
     args: Hyperparameters,
     train_loader: TokenLoader,
     compiled_loss_and_grad,
-) -> tuple[mx.array, dict]:
+) -> tuple[mx.array, dict, mx.array, mx.array]:
     chunk_sizes = token_chunks(args.microbatch_tokens, args.train_seq_len, args.mlx_max_microbatch_tokens)
     total_tokens = float(sum(chunk_sizes))
     loss_value = mx.array(0.0, dtype=mx.float32)
     grad_accum: dict[str, mx.array] | None = None
+    last_x: mx.array | None = None
+    last_y: mx.array | None = None
     for chunk_tokens in chunk_sizes:
         x, y = train_loader.next_batch(chunk_tokens, args.train_seq_len)
+        last_x, last_y = x, y
         loss, grads = compiled_loss_and_grad(x, y)
         scale = float(y.size) / total_tokens
         loss_value = loss_value + loss.astype(mx.float32) * scale
         grad_accum = accumulate_flat_grads(grad_accum, grads, scale)
         if args.mlx_eager_eval:
             mx.eval(loss_value, grad_accum)  # materialize each chunk to cap peak memory
-    return loss_value, tree_unflatten(list(grad_accum.items()))
+    return loss_value, tree_unflatten(list(grad_accum.items())), last_x, last_y
 
 
 def eval_val(
@@ -897,6 +937,7 @@ def main() -> None:
         rope_base=args.rope_base,
         tied_embed_init_std=args.tied_embed_init_std,
         qk_gain_init=args.qk_gain_init,
+        embed_loss_lambda=args.embed_loss_lambda,
     )
     opt = SplitOptimizers(model, args)
 
@@ -913,7 +954,6 @@ def main() -> None:
         inputs=model.state,
         outputs=model.state,
     )
-
     # Print config once so logs are self-describing.
     n_params = sum(int(np.prod(p.shape)) for _, p in tree_flatten(model.parameters()))
     log(f"run_id:{args.run_id}")
@@ -949,6 +989,7 @@ def main() -> None:
         f"matrix_lr:{args.matrix_lr} scalar_lr:{args.scalar_lr} "
         f"muon_momentum:{args.muon_momentum} muon_steps:{args.muon_backend_steps}"
     )
+    log(f"embed_loss_lambda:{args.embed_loss_lambda}")
     log(f"val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path={args.tokenizer_path}")
     log(f"compute_dtype:{COMPUTE_DTYPE} compile:True")
     log(
@@ -970,7 +1011,7 @@ def main() -> None:
             warmup_loss = mx.array(0.0, dtype=mx.float32)
             grad_scale = 1.0 / args.grad_accum_steps
             for _ in range(args.grad_accum_steps):
-                warmup_loss, grads = loss_and_grad_chunked(args, train_loader, compiled_loss_and_grad)
+                warmup_loss, grads, _, _ = loss_and_grad_chunked(args, train_loader, compiled_loss_and_grad)
                 accum = accumulate_flat_grads(accum, grads, grad_scale)
             mx.eval(warmup_loss, accum)
             mx.synchronize()
@@ -1031,8 +1072,9 @@ def main() -> None:
         accum: dict[str, mx.array] | None = None
         train_loss = mx.array(0.0, dtype=mx.float32)
         grad_scale = 1.0 / args.grad_accum_steps
+        last_x = last_y = None
         for _ in range(args.grad_accum_steps):
-            loss, grads = loss_and_grad_chunked(args, train_loader, compiled_loss_and_grad)
+            loss, grads, last_x, last_y = loss_and_grad_chunked(args, train_loader, compiled_loss_and_grad)
             accum = accumulate_flat_grads(accum, grads, grad_scale)
             train_loss = train_loss + loss.astype(mx.float32) * grad_scale
             if args.mlx_eager_eval:
@@ -1048,11 +1090,21 @@ def main() -> None:
         approx_train_time_ms = train_time_ms + 1000.0 * (time.perf_counter() - t0)
         tok_s = args.train_batch_tokens / (step_ms / 1000.0)
         step += 1
-        if args.train_log_every > 0 and (step <= 10 or step % args.train_log_every == 0 or stop_after_step is not None):
+        should_log = args.train_log_every > 0 and (step <= 10 or step % args.train_log_every == 0 or stop_after_step is not None)
+        if should_log:
             log(
                 f"step:{step}/{args.iterations} train_loss:{train_loss_value:.4f} "
                 f"train_time:{approx_train_time_ms:.0f}ms step_avg:{approx_train_time_ms / step:.2f}ms tok_s:{tok_s:.0f}"
             )
+            if args.embed_loss_lambda > 0.0 and last_x is not None:
+                ce_l, emb_l = model.loss_components(last_x, last_y)
+                mx.eval(ce_l, emb_l)
+                ce_v, emb_v = float(ce_l), float(emb_l)
+                lam = args.embed_loss_lambda
+                embed_frac = (lam * emb_v) / (ce_v + lam * emb_v) if (ce_v + lam * emb_v) > 0 else 0.0
+                log(
+                    f"step:{step} lambda:{lam:.4f} ce:{ce_v:.4f} embed:{emb_v:.4f} embed_frac:{embed_frac:.3f}"
+                )
         if max_wallclock_ms is not None and stop_after_step is None and approx_train_time_ms >= max_wallclock_ms:
             stop_after_step = step
 
