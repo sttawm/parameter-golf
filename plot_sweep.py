@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Parse sweep log files and plot CE loss, embed loss, and ms/step.
+Parse sweep log files and plot CE loss, embed loss, ms/step, and val_bpb.
+Shows each metric twice: vs steps (left) and vs wall-clock seconds (right).
 
 Usage:
     python plot_sweep.py logs/sweep_*.txt
@@ -17,27 +18,22 @@ import matplotlib.pyplot as plt
 # ── parser ────────────────────────────────────────────────────────────────────
 
 def parse_log(path: Path) -> dict:
-    """
-    Returns dict with keys:
-        label, lambda, steps (list), ce (list), embed (list), step_avg_ms (list)
-    embed is None for baseline runs.
-    """
-    train_re   = re.compile(
-        r"step:(\d+)/\d+ train_loss:([\d.]+).*step_avg:([\d.]+)ms"
+    train_re  = re.compile(
+        r"step:(\d+)/\d+ train_loss:([\d.]+).*train_time:(\d+)ms.*step_avg:([\d.]+)ms"
     )
-    val_re     = re.compile(
-        r"^step:(\d+)/\d+ val_loss:[\d.]+ val_bpb:([\d.]+)"
+    val_re    = re.compile(
+        r"^step:(\d+)/\d+ val_loss:[\d.]+ val_bpb:([\d.]+).*train_time:(\d+)ms"
     )
-    comps_re   = re.compile(
+    comps_re  = re.compile(
         r"step:(\d+) lambda:([\d.]+) ce:([\d.]+) embed:([\d.]+)"
     )
-    lambda_re  = re.compile(r"embed_loss_lambda:([\d.]+)")
-    run_id_re  = re.compile(r"run_id:(\S+)")
+    lambda_re = re.compile(r"embed_loss_lambda:([\d.]+)")
+    run_id_re = re.compile(r"run_id:(\S+)")
 
     embed_lambda = 0.0
     run_id = path.stem
 
-    # step → {train_loss, ce, embed, step_avg_ms, val_bpb}
+    # step → {train_loss, train_time_ms, ce, embed, step_avg_ms, val_bpb, val_time_ms}
     rows: dict[int, dict] = {}
 
     with open(path, encoding="utf-8") as f:
@@ -56,13 +52,15 @@ def parse_log(path: Path) -> dict:
                 step = int(m.group(1))
                 rows.setdefault(step, {})
                 rows[step]["val_bpb"] = float(m.group(2))
+                rows[step]["val_time_ms"] = int(m.group(3))
                 continue
             m = train_re.search(line)
             if m:
                 step = int(m.group(1))
                 rows.setdefault(step, {})
                 rows[step]["train_loss"] = float(m.group(2))
-                rows[step]["step_avg_ms"] = float(m.group(3))
+                rows[step]["train_time_ms"] = int(m.group(3))
+                rows[step]["step_avg_ms"] = float(m.group(4))
                 continue
             m = comps_re.search(line)
             if m:
@@ -71,16 +69,19 @@ def parse_log(path: Path) -> dict:
                 rows[step]["ce"] = float(m.group(3))
                 rows[step]["embed"] = float(m.group(4))
 
-    steps, ce_vals, embed_vals, timing_vals = [], [], [], []
-    val_steps, val_bpb_vals = [], []
+    steps, times_s, ce_vals, embed_vals, timing_vals = [], [], [], [], []
+    val_steps, val_times_s, val_bpb_vals = [], [], []
+
     for step in sorted(rows):
         row = rows[step]
         if "val_bpb" in row:
             val_steps.append(step)
+            val_times_s.append(row.get("val_time_ms", 0) / 1000.0)
             val_bpb_vals.append(row["val_bpb"])
         if "step_avg_ms" not in row:
             continue
         steps.append(step)
+        times_s.append(row["train_time_ms"] / 1000.0)
         if embed_lambda > 0.0 and "ce" in row:
             ce_vals.append(row["ce"])
             embed_vals.append(row.get("embed"))
@@ -89,19 +90,18 @@ def parse_log(path: Path) -> dict:
             embed_vals.append(None)
         timing_vals.append(row["step_avg_ms"])
 
-    if embed_lambda == 0.0:
-        label = "baseline"
-    else:
-        label = f"λ={embed_lambda}"
+    label = "baseline" if embed_lambda == 0.0 else f"λ={embed_lambda}"
 
     return dict(
         label=label,
         lam=embed_lambda,
         steps=steps,
+        times_s=times_s,
         ce=ce_vals,
         embed=embed_vals,
         step_avg_ms=timing_vals,
         val_steps=val_steps,
+        val_times_s=val_times_s,
         val_bpb=val_bpb_vals,
         run_id=run_id,
     )
@@ -109,57 +109,75 @@ def parse_log(path: Path) -> dict:
 
 # ── plotting ──────────────────────────────────────────────────────────────────
 
+METRICS = [
+    ("CE loss",               "ce",          "embed",        False),
+    ("Embed loss",            "embed",        None,           False),
+    ("ms / step (cum. avg)",  "step_avg_ms",  None,           False),
+    ("val_bpb",               None,           None,           True),   # val only
+]
+
 def main(paths: list[Path]) -> None:
     runs = [parse_log(p) for p in paths]
-    # sort by lambda so legend is ordered
     runs.sort(key=lambda r: r["lam"])
 
-    fig, axes = plt.subplots(4, 1, figsize=(10, 15), sharex=True)
+    n_rows = 4
+    fig, axes = plt.subplots(n_rows, 2, figsize=(16, 14),
+                             gridspec_kw={"hspace": 0.35, "wspace": 0.25})
     fig.suptitle("Embedding-loss lambda sweep", fontsize=14, fontweight="bold")
-
-    ax_ce, ax_emb, ax_ms, ax_bpb = axes
 
     colors = plt.cm.tab10.colors
 
     for i, run in enumerate(runs):
-        color = colors[i % len(colors)]
-        label = run["label"]
-        steps = run["steps"]
+        color  = colors[i % len(colors)]
+        label  = run["label"]
+        steps  = run["steps"]
+        times  = run["times_s"]
 
-        ax_ce.plot(steps, run["ce"], label=label, color=color, linewidth=1.5)
+        # ── row 0: CE loss ──
+        ax_l, ax_r = axes[0]
+        ax_l.plot(steps, run["ce"], label=label, color=color, linewidth=1.5)
+        ax_r.plot(times, run["ce"], label=label, color=color, linewidth=1.5)
 
-        embed_vals = run["embed"]
-        if any(v is not None for v in embed_vals):
-            clean_steps = [s for s, v in zip(steps, embed_vals) if v is not None]
-            clean_vals  = [v for v in embed_vals if v is not None]
-            ax_emb.plot(clean_steps, clean_vals, label=label, color=color, linewidth=1.5)
+        # ── row 1: embed loss ──
+        ax_l, ax_r = axes[1]
+        ev = run["embed"]
+        if any(v is not None for v in ev):
+            cs = [s for s, v in zip(steps, ev) if v is not None]
+            ct = [t for t, v in zip(times,  ev) if v is not None]
+            cv = [v for v in ev if v is not None]
+            ax_l.plot(cs, cv, label=label, color=color, linewidth=1.5)
+            ax_r.plot(ct, cv, label=label, color=color, linewidth=1.5)
 
-        ax_ms.plot(steps, run["step_avg_ms"], label=label, color=color, linewidth=1.5)
+        # ── row 2: ms/step ──
+        ax_l, ax_r = axes[2]
+        ax_l.plot(steps, run["step_avg_ms"], label=label, color=color, linewidth=1.5)
+        ax_r.plot(times, run["step_avg_ms"], label=label, color=color, linewidth=1.5)
 
+        # ── row 3: val_bpb ──
+        ax_l, ax_r = axes[3]
         if run["val_steps"]:
-            ax_bpb.plot(run["val_steps"], run["val_bpb"], label=label, color=color,
-                        linewidth=1.5, marker="o", markersize=5)
+            ax_l.plot(run["val_steps"],  run["val_bpb"], label=label, color=color,
+                      linewidth=1.5, marker="o", markersize=5)
+            ax_r.plot(run["val_times_s"], run["val_bpb"], label=label, color=color,
+                      linewidth=1.5, marker="o", markersize=5)
 
-    ax_ce.set_ylabel("CE loss")
-    ax_ce.legend(loc="upper right")
-    ax_ce.grid(True, alpha=0.3)
+    ylabels = ["CE loss", "Embed loss", "ms / step (cum. avg)", "val_bpb"]
+    for row, ylabel in enumerate(ylabels):
+        for col in range(2):
+            ax = axes[row][col]
+            ax.set_ylabel(ylabel)
+            ax.legend(loc="upper right", fontsize=7)
+            ax.grid(True, alpha=0.3)
 
-    ax_emb.set_ylabel("Embed loss (1 − cosine)")
-    ax_emb.legend(loc="upper right")
-    ax_emb.grid(True, alpha=0.3)
+    for col, xlabel in enumerate(["Step", "Wall-clock time (s)"]):
+        axes[n_rows - 1][col].set_xlabel(xlabel)
 
-    ax_ms.set_ylabel("ms / step (cumulative avg)")
-    ax_ms.legend(loc="upper right")
-    ax_ms.grid(True, alpha=0.3)
+    # column titles
+    axes[0][0].set_title("vs Steps", fontsize=11)
+    axes[0][1].set_title("vs Wall-clock time", fontsize=11)
 
-    ax_bpb.set_ylabel("val_bpb")
-    ax_bpb.set_xlabel("Step")
-    ax_bpb.legend(loc="upper right")
-    ax_bpb.grid(True, alpha=0.3)
-
-    plt.tight_layout()
     out = Path("sweep_plot.png")
-    plt.savefig(out, dpi=150)
+    plt.savefig(out, dpi=150, bbox_inches="tight")
     print(f"Saved {out}")
     plt.show()
 
