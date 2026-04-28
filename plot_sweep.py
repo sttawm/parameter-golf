@@ -28,9 +28,15 @@ def parse_log(path: Path) -> dict:
         r"step:(\d+) lambda:([\d.]+) ce:([\d.]+) embed:([\d.]+)"
     )
     lambda_re = re.compile(r"embed_loss_lambda:([\d.]+)")
+    l2_re     = re.compile(r"embed_loss_l2:(\d)")
+    topk_re   = re.compile(r"embed_loss_topk:(\d+)")
+    tied_re   = re.compile(r"tie_embeddings:(True|False|0|1)")
     run_id_re = re.compile(r"run_id:(\S+)")
 
     embed_lambda = 0.0
+    embed_l2 = False
+    embed_topk = 0
+    tied = True
     run_id = path.stem
 
     # step → {train_loss, train_time_ms, ce, embed, step_avg_ms, val_bpb, val_time_ms}
@@ -39,13 +45,29 @@ def parse_log(path: Path) -> dict:
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
+            # Config fields may co-appear on the same line — parse without continue.
+            is_config = False
             m = lambda_re.search(line)
             if m:
                 embed_lambda = float(m.group(1))
-                continue
+                is_config = True
+            m = l2_re.search(line)
+            if m:
+                embed_l2 = m.group(1) in ("1", "True")
+                is_config = True
+            m = topk_re.search(line)
+            if m:
+                embed_topk = int(m.group(1))
+                is_config = True
+            m = tied_re.search(line)
+            if m:
+                tied = m.group(1) in ("1", "True")
+                is_config = True
             m = run_id_re.search(line)
             if m:
                 run_id = m.group(1)
+                is_config = True
+            if is_config:
                 continue
             m = val_re.match(line)
             if m:
@@ -90,11 +112,23 @@ def parse_log(path: Path) -> dict:
             embed_vals.append(None)
         timing_vals.append(row["step_avg_ms"])
 
-    label = "baseline" if embed_lambda == 0.0 else f"λ={embed_lambda}"
+    # Build a descriptive label
+    max_train_s = max((rows[s].get("train_time_ms", 0) for s in rows), default=0) / 1000
+    duration_tag = f" ({int(round(max_train_s / 60))}min)" if max_train_s > 10 else ""
+    tie_tag = "tied" if tied else "untied"
+    if embed_lambda == 0.0:
+        label = f"baseline/{tie_tag}{duration_tag}"
+    else:
+        loss_tag = "L2" if embed_l2 else "cos"
+        topk_tag = f" K={embed_topk}" if embed_topk > 0 else ""
+        label = f"λ={embed_lambda} {loss_tag}{topk_tag}/{tie_tag}{duration_tag}"
 
     return dict(
         label=label,
         lam=embed_lambda,
+        l2=embed_l2,
+        topk=embed_topk,
+        tied=tied,
         steps=steps,
         times_s=times_s,
         ce=ce_vals,
@@ -118,7 +152,7 @@ METRICS = [
 
 def main(paths: list[Path]) -> None:
     runs = [parse_log(p) for p in paths]
-    runs.sort(key=lambda r: r["lam"])
+    runs.sort(key=lambda r: (r["l2"], not r["tied"], r["topk"], r["lam"]))
 
     n_rows = 4
     fig, axes = plt.subplots(n_rows, 2, figsize=(16, 14),
