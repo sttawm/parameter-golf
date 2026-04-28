@@ -25,6 +25,9 @@ def parse_log(path: Path) -> dict:
     train_re   = re.compile(
         r"step:(\d+)/\d+ train_loss:([\d.]+).*step_avg:([\d.]+)ms"
     )
+    val_re     = re.compile(
+        r"^step:(\d+)/\d+ val_loss:[\d.]+ val_bpb:([\d.]+)"
+    )
     comps_re   = re.compile(
         r"step:(\d+) lambda:([\d.]+) ce:([\d.]+) embed:([\d.]+)"
     )
@@ -34,7 +37,7 @@ def parse_log(path: Path) -> dict:
     embed_lambda = 0.0
     run_id = path.stem
 
-    # step → {train_loss, ce, embed, step_avg_ms}
+    # step → {train_loss, ce, embed, step_avg_ms, val_bpb}
     rows: dict[int, dict] = {}
 
     with open(path, encoding="utf-8") as f:
@@ -47,6 +50,12 @@ def parse_log(path: Path) -> dict:
             m = run_id_re.search(line)
             if m:
                 run_id = m.group(1)
+                continue
+            m = val_re.match(line)
+            if m:
+                step = int(m.group(1))
+                rows.setdefault(step, {})
+                rows[step]["val_bpb"] = float(m.group(2))
                 continue
             m = train_re.search(line)
             if m:
@@ -63,8 +72,12 @@ def parse_log(path: Path) -> dict:
                 rows[step]["embed"] = float(m.group(4))
 
     steps, ce_vals, embed_vals, timing_vals = [], [], [], []
+    val_steps, val_bpb_vals = [], []
     for step in sorted(rows):
         row = rows[step]
+        if "val_bpb" in row:
+            val_steps.append(step)
+            val_bpb_vals.append(row["val_bpb"])
         if "step_avg_ms" not in row:
             continue
         steps.append(step)
@@ -88,6 +101,8 @@ def parse_log(path: Path) -> dict:
         ce=ce_vals,
         embed=embed_vals,
         step_avg_ms=timing_vals,
+        val_steps=val_steps,
+        val_bpb=val_bpb_vals,
         run_id=run_id,
     )
 
@@ -99,10 +114,10 @@ def main(paths: list[Path]) -> None:
     # sort by lambda so legend is ordered
     runs.sort(key=lambda r: r["lam"])
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(10, 15), sharex=True)
     fig.suptitle("Embedding-loss lambda sweep", fontsize=14, fontweight="bold")
 
-    ax_ce, ax_emb, ax_ms = axes
+    ax_ce, ax_emb, ax_ms, ax_bpb = axes
 
     colors = plt.cm.tab10.colors
 
@@ -121,6 +136,10 @@ def main(paths: list[Path]) -> None:
 
         ax_ms.plot(steps, run["step_avg_ms"], label=label, color=color, linewidth=1.5)
 
+        if run["val_steps"]:
+            ax_bpb.plot(run["val_steps"], run["val_bpb"], label=label, color=color,
+                        linewidth=1.5, marker="o", markersize=5)
+
     ax_ce.set_ylabel("CE loss")
     ax_ce.legend(loc="upper right")
     ax_ce.grid(True, alpha=0.3)
@@ -130,9 +149,13 @@ def main(paths: list[Path]) -> None:
     ax_emb.grid(True, alpha=0.3)
 
     ax_ms.set_ylabel("ms / step (cumulative avg)")
-    ax_ms.set_xlabel("Step")
     ax_ms.legend(loc="upper right")
     ax_ms.grid(True, alpha=0.3)
+
+    ax_bpb.set_ylabel("val_bpb")
+    ax_bpb.set_xlabel("Step")
+    ax_bpb.legend(loc="upper right")
+    ax_bpb.grid(True, alpha=0.3)
 
     plt.tight_layout()
     out = Path("sweep_plot.png")
