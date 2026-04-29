@@ -891,6 +891,17 @@ def main() -> None:
     compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
+    # Pre-compile CE-only graph so the cutoff switch is pause-free.
+    if args.embed_loss_cutoff_step > 0 and args.embed_loss_lambda > 0.0:
+        _saved_lam = base_model.embed_loss_lambda
+        base_model.embed_loss_lambda = 0.0
+        compiled_model_ce_only = torch.compile(base_model, dynamic=False, fullgraph=True)
+        model_ce_only: nn.Module = DDP(compiled_model_ce_only, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model_ce_only
+        base_model.embed_loss_lambda = _saved_lam
+    else:
+        compiled_model_ce_only = compiled_model
+        model_ce_only = model
+
     # Optimizer split:
     # - token embedding (Adam) uses EMBED_LR
     # - untied lm_head (Adam) uses HEAD_LR
@@ -1086,11 +1097,9 @@ def main() -> None:
 
         if (args.embed_loss_cutoff_step > 0
                 and step == args.embed_loss_cutoff_step
-                and base_model.embed_loss_lambda > 0.0):
-            base_model.embed_loss_lambda = 0.0
-            compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
-            model = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
-            log0(f"step:{step} embed_loss_cutoff reached, recompiling CE-only model")
+                and args.embed_loss_lambda > 0.0):
+            model = model_ce_only
+            log0(f"step:{step} embed_loss_cutoff reached, switching to CE-only model")
 
         approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         should_log_train = (

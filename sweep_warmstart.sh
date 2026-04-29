@@ -33,9 +33,6 @@ run() {
     echo "--- Done: ${run_id} ---"
 }
 
-# Control: untied baseline (no embed loss)
-run "baseline"   EMBED_LOSS_LAMBDA=0.0
-
 # Warm-start: lambda=0.1 for first N steps, then CE-only
 run "ws50"       EMBED_LOSS_LAMBDA=0.1 EMBED_LOSS_CUTOFF_STEP=50
 run "ws100"      EMBED_LOSS_LAMBDA=0.1 EMBED_LOSS_CUTOFF_STEP=100
