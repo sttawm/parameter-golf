@@ -27,15 +27,17 @@ def parse_log(path: Path) -> dict:
     comps_re  = re.compile(
         r"step:(\d+) lambda:([\d.]+) ce:([\d.]+) embed:([\d.]+)"
     )
-    lambda_re = re.compile(r"embed_loss_lambda:([\d.]+)")
-    l2_re     = re.compile(r"embed_loss_l2:(\d)")
-    topk_re   = re.compile(r"embed_loss_topk:(\d+)")
-    tied_re   = re.compile(r"tie_embeddings:(True|False|0|1)")
-    run_id_re = re.compile(r"run_id:(\S+)")
+    lambda_re  = re.compile(r"embed_loss_lambda:([\d.]+)")
+    l2_re      = re.compile(r"embed_loss_l2:(\d)")
+    topk_re    = re.compile(r"embed_loss_topk:(\d+)")
+    cutoff_re  = re.compile(r"embed_loss_cutoff_step:(\d+)")
+    tied_re    = re.compile(r"tie_embeddings:(True|False|0|1)")
+    run_id_re  = re.compile(r"run_id:(\S+)")
 
     embed_lambda = 0.0
     embed_l2 = False
     embed_topk = 0
+    embed_cutoff = 0
     tied = True
     run_id = path.stem
 
@@ -58,6 +60,10 @@ def parse_log(path: Path) -> dict:
             m = topk_re.search(line)
             if m:
                 embed_topk = int(m.group(1))
+                is_config = True
+            m = cutoff_re.search(line)
+            if m:
+                embed_cutoff = int(m.group(1))
                 is_config = True
             m = tied_re.search(line)
             if m:
@@ -121,13 +127,15 @@ def parse_log(path: Path) -> dict:
     else:
         loss_tag = "L2" if embed_l2 else "cos"
         topk_tag = f" K={embed_topk}" if embed_topk > 0 else ""
-        label = f"λ={embed_lambda} {loss_tag}{topk_tag}/{tie_tag}{duration_tag}"
+        cutoff_tag = f" →0@{embed_cutoff}" if embed_cutoff > 0 else ""
+        label = f"λ={embed_lambda} {loss_tag}{topk_tag}{cutoff_tag}/{tie_tag}{duration_tag}"
 
     return dict(
         label=label,
         lam=embed_lambda,
         l2=embed_l2,
         topk=embed_topk,
+        cutoff=embed_cutoff,
         tied=tied,
         steps=steps,
         times_s=times_s,

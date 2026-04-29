@@ -88,6 +88,7 @@ class Hyperparameters:
     embed_loss_lambda: float = float(os.environ.get("EMBED_LOSS_LAMBDA", "0.0"))
     embed_loss_l2: bool = bool(int(os.environ.get("EMBED_LOSS_L2", "0")))
     embed_loss_topk: int = int(os.environ.get("EMBED_LOSS_TOPK", "0"))
+    embed_loss_cutoff_step: int = int(os.environ.get("EMBED_LOSS_CUTOFF_STEP", "0"))
 
 # -----------------------------
 # MUON OPTIMIZER 
@@ -955,7 +956,7 @@ def main() -> None:
         f"max_wallclock_seconds:{args.max_wallclock_seconds:.3f}"
     )
     log0(f"seed:{args.seed}")
-    log0(f"embed_loss_lambda:{args.embed_loss_lambda} embed_loss_l2:{args.embed_loss_l2} embed_loss_topk:{args.embed_loss_topk}")
+    log0(f"embed_loss_lambda:{args.embed_loss_lambda} embed_loss_l2:{args.embed_loss_l2} embed_loss_topk:{args.embed_loss_topk} embed_loss_cutoff_step:{args.embed_loss_cutoff_step}")
 
     # -----------------------------
     # DATA LOADER & MODEL WARMUP
@@ -1082,6 +1083,15 @@ def main() -> None:
         zero_grad_all()
 
         step += 1
+
+        if (args.embed_loss_cutoff_step > 0
+                and step == args.embed_loss_cutoff_step
+                and base_model.embed_loss_lambda > 0.0):
+            base_model.embed_loss_lambda = 0.0
+            compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
+            model = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
+            log0(f"step:{step} embed_loss_cutoff reached, recompiling CE-only model")
+
         approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         should_log_train = (
             args.train_log_every > 0
