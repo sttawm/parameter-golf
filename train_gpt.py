@@ -1111,7 +1111,8 @@ def main() -> None:
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
                 f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
             )
-            if args.embed_loss_lambda > 0.0:
+            cutoff_active = args.embed_loss_cutoff_step > 0 and step > args.embed_loss_cutoff_step
+            if args.embed_loss_lambda > 0.0 and not cutoff_active:
                 ce_l, emb_l = base_model.loss_components(x, y)
                 lam = args.embed_loss_lambda
                 ce_v, emb_v = ce_l.item(), emb_l.item()
