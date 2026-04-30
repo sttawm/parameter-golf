@@ -1084,6 +1084,18 @@ def main() -> None:
             (loss * grad_scale).backward()
         train_loss /= grad_accum_steps
 
+        # Pre-compute CE/embed components before optimizer step so they're
+        # measured at the same point as train_loss (pre-update), making
+        # comparison with the lambda=0 baseline apples-to-apples.
+        _pre_update_ce: float | None = None
+        _pre_update_emb: float | None = None
+        cutoff_active = args.embed_loss_cutoff_step > 0 and (step + 1) > args.embed_loss_cutoff_step
+        if args.embed_loss_lambda > 0.0 and not cutoff_active:
+            with torch.no_grad():
+                ce_l, emb_l = base_model.loss_components(x, y)
+            _pre_update_ce = ce_l.item()
+            _pre_update_emb = emb_l.item()
+
         frac = min(step / args.muon_momentum_warmup_steps, 1.0) if args.muon_momentum_warmup_steps > 0 else 1.0
         muon_momentum = (1 - frac) * args.muon_momentum_warmup_start + frac * args.muon_momentum
         for group in optimizer_muon.param_groups:
@@ -1117,11 +1129,9 @@ def main() -> None:
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
                 f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
             )
-            cutoff_active = args.embed_loss_cutoff_step > 0 and step > args.embed_loss_cutoff_step
-            if args.embed_loss_lambda > 0.0 and not cutoff_active:
-                ce_l, emb_l = base_model.loss_components(x, y)
+            if _pre_update_ce is not None:
                 lam = args.embed_loss_lambda
-                ce_v, emb_v = ce_l.item(), emb_l.item()
+                ce_v, emb_v = _pre_update_ce, _pre_update_emb
                 embed_frac = (lam * emb_v) / (ce_v + lam * emb_v) if (ce_v + lam * emb_v) > 0 else 0.0
                 log0(f"step:{step} lambda:{lam:.4f} ce:{ce_v:.4f} embed:{emb_v:.4f} embed_frac:{embed_frac:.3f}")
 
