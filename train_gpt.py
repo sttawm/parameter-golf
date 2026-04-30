@@ -91,6 +91,7 @@ class Hyperparameters:
     embed_loss_cutoff_step: int = int(os.environ.get("EMBED_LOSS_CUTOFF_STEP", "0"))
     embed_loss_only: bool = bool(int(os.environ.get("EMBED_LOSS_ONLY", "0")))
     recon_loss_beta: float = float(os.environ.get("RECON_LOSS_BETA", "0.0"))
+    uniform_loss_gamma: float = float(os.environ.get("UNIFORM_LOSS_GAMMA", "0.0"))
 
 # -----------------------------
 # MUON OPTIMIZER 
@@ -670,6 +671,7 @@ class GPT(nn.Module):
         embed_loss_topk: int = 0,
         embed_loss_only: bool = False,
         recon_loss_beta: float = 0.0,
+        uniform_loss_gamma: float = 0.0,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -682,6 +684,7 @@ class GPT(nn.Module):
         self.embed_loss_topk = embed_loss_topk
         self.embed_loss_only = embed_loss_only
         self.recon_loss_beta = recon_loss_beta
+        self.uniform_loss_gamma = uniform_loss_gamma
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
@@ -764,6 +767,17 @@ class GPT(nn.Module):
         logits = self.logit_softcap * torch.tanh(logits / self.logit_softcap)
         return F.cross_entropy(logits, unique_ids, reduction="mean")
 
+    def _uniform_loss(self, num_samples: int = 128) -> Tensor:
+        # Wang & Isola (2020) uniformity loss on the unit hypersphere.
+        # Minimizing this spreads token embeddings apart, preventing collapse.
+        # Value is always ≤ 0: 0 = total collapse, −∞ = maximally spread.
+        E = self.tok_emb.weight.float()
+        idx = torch.randperm(E.shape[0], device=E.device)[:num_samples]
+        e = F.normalize(E[idx], dim=-1)                      # [K, d]
+        sq_dist = 2.0 - 2.0 * (e @ e.T)                     # [K, K], ||e_i-e_j||²
+        mask = ~torch.eye(num_samples, dtype=torch.bool, device=e.device)
+        return sq_dist[mask].mul(-2.0).exp().mean().log()
+
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         targets = target_ids.reshape(-1)
         _, logits = self._get_logits(input_ids)
@@ -778,6 +792,8 @@ class GPT(nn.Module):
             total = total + self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
         if self.recon_loss_beta > 0.0:
             total = total + self.recon_loss_beta * self._recon_loss(targets)
+        if self.uniform_loss_gamma > 0.0:
+            total = total + self.uniform_loss_gamma * self._uniform_loss()
         return total
 
     @torch.no_grad()
@@ -907,6 +923,7 @@ def main() -> None:
         embed_loss_topk=args.embed_loss_topk,
         embed_loss_only=args.embed_loss_only,
         recon_loss_beta=args.recon_loss_beta,
+        uniform_loss_gamma=args.uniform_loss_gamma,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -993,6 +1010,7 @@ def main() -> None:
     log0(f"seed:{args.seed}")
     log0(f"embed_loss_lambda:{args.embed_loss_lambda} embed_loss_l2:{args.embed_loss_l2} embed_loss_topk:{args.embed_loss_topk} embed_loss_cutoff_step:{args.embed_loss_cutoff_step} embed_loss_only:{args.embed_loss_only}")
     log0(f"recon_loss_beta:{args.recon_loss_beta}")
+    log0(f"uniform_loss_gamma:{args.uniform_loss_gamma}")
 
     # -----------------------------
     # DATA LOADER & MODEL WARMUP
@@ -1168,6 +1186,11 @@ def main() -> None:
                 beta = args.recon_loss_beta
                 recon_frac = (beta * recon_v) / (train_loss.item() + 1e-8)
                 log0(f"step:{step} beta:{beta:.4f} recon:{recon_v:.4f} recon_frac:{recon_frac:.3f}")
+            if args.uniform_loss_gamma > 0.0 and should_log_train:
+                with torch.no_grad():
+                    unif_v = base_model._uniform_loss().item()
+                gamma = args.uniform_loss_gamma
+                log0(f"step:{step} gamma:{gamma:.4f} uniform:{unif_v:.4f}")
 
         # Needed to sync whether we've reached the wallclock cap.
         reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
