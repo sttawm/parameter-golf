@@ -90,6 +90,7 @@ class Hyperparameters:
     embed_loss_topk: int = int(os.environ.get("EMBED_LOSS_TOPK", "0"))
     embed_loss_cutoff_step: int = int(os.environ.get("EMBED_LOSS_CUTOFF_STEP", "0"))
     embed_loss_only: bool = bool(int(os.environ.get("EMBED_LOSS_ONLY", "0")))
+    recon_loss_beta: float = float(os.environ.get("RECON_LOSS_BETA", "0.0"))
 
 # -----------------------------
 # MUON OPTIMIZER 
@@ -668,6 +669,7 @@ class GPT(nn.Module):
         embed_loss_l2: bool = False,
         embed_loss_topk: int = 0,
         embed_loss_only: bool = False,
+        recon_loss_beta: float = 0.0,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -679,6 +681,7 @@ class GPT(nn.Module):
         self.embed_loss_l2 = embed_loss_l2
         self.embed_loss_topk = embed_loss_topk
         self.embed_loss_only = embed_loss_only
+        self.recon_loss_beta = recon_loss_beta
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
@@ -753,6 +756,14 @@ class GPT(nn.Module):
         cos = F.cosine_similarity(e_hat, e_gt, dim=-1, eps=1e-8)
         return (1.0 - cos).mean()
 
+    def _recon_loss(self, targets: Tensor) -> Tensor:
+        unique_ids = torch.unique(targets)
+        e = self.tok_emb.weight[unique_ids].float()          # [K, d]
+        W = self._embed_output_matrix().float()              # [V, d]
+        logits = F.linear(e, W)                              # [K, V]
+        logits = self.logit_softcap * torch.tanh(logits / self.logit_softcap)
+        return F.cross_entropy(logits, unique_ids, reduction="mean")
+
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         targets = target_ids.reshape(-1)
         _, logits = self._get_logits(input_ids)
@@ -762,9 +773,12 @@ class GPT(nn.Module):
                 return ce_loss  # eval always reports CE so val_bpb is meaningful
             self._embed_only_train_ce = ce_loss.detach()  # free: logits already computed
             return self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
-        if self.embed_loss_lambda <= 0.0:
-            return ce_loss
-        return ce_loss + self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
+        total = ce_loss
+        if self.embed_loss_lambda > 0.0:
+            total = total + self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
+        if self.recon_loss_beta > 0.0:
+            total = total + self.recon_loss_beta * self._recon_loss(targets)
+        return total
 
     @torch.no_grad()
     def loss_components(self, input_ids: Tensor, target_ids: Tensor) -> tuple[Tensor, Tensor]:
@@ -892,6 +906,7 @@ def main() -> None:
         embed_loss_l2=args.embed_loss_l2,
         embed_loss_topk=args.embed_loss_topk,
         embed_loss_only=args.embed_loss_only,
+        recon_loss_beta=args.recon_loss_beta,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -977,6 +992,7 @@ def main() -> None:
     )
     log0(f"seed:{args.seed}")
     log0(f"embed_loss_lambda:{args.embed_loss_lambda} embed_loss_l2:{args.embed_loss_l2} embed_loss_topk:{args.embed_loss_topk} embed_loss_cutoff_step:{args.embed_loss_cutoff_step} embed_loss_only:{args.embed_loss_only}")
+    log0(f"recon_loss_beta:{args.recon_loss_beta}")
 
     # -----------------------------
     # DATA LOADER & MODEL WARMUP
@@ -1146,6 +1162,12 @@ def main() -> None:
                 else:
                     emb_norm = base_model.tok_emb.weight.norm(dim=1).mean().item()
                     log0(f"step:{step} lambda:{lam:.4f} ce:{_pre_update_ce:.4f} embed_only:True emb_norm:{emb_norm:.4f}")
+            if args.recon_loss_beta > 0.0 and should_log_train:
+                with torch.no_grad():
+                    recon_v = base_model._recon_loss(y.reshape(-1)).item()
+                beta = args.recon_loss_beta
+                recon_frac = (beta * recon_v) / (train_loss.item() + 1e-8)
+                log0(f"step:{step} beta:{beta:.4f} recon:{recon_v:.4f} recon_frac:{recon_frac:.3f}")
 
         # Needed to sync whether we've reached the wallclock cap.
         reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
