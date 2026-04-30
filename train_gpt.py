@@ -740,7 +740,7 @@ class GPT(nn.Module):
         return self.tok_emb.weight if self.tie_embeddings else self.lm_head.weight
 
     def _embed_aux_loss(self, logits: Tensor, targets: Tensor) -> Tensor:
-        E = self._embed_output_matrix().float()
+        E = self.tok_emb.weight.float()  # always use input embeddings (lm_head is zero-init for untied)
         p = torch.softmax(logits.float(), dim=-1)
         K = self.embed_loss_topk
         if K > 0:
