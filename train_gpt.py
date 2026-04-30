@@ -777,12 +777,16 @@ class GPT(nn.Module):
         # Uses all vocab tokens; for unit vectors sq_dist = 2*(1 - cos),
         # so this is equivalent to a cosine-distance-based spread loss.
         # Value ≤ 0: 0 = total collapse, more negative = more spread.
+        # Diagonal: sq_dist[i,i] = 0 → kernel[i,i] = exp(0) = 1 always.
+        # We subtract V diagonal 1s instead of boolean masking (which uses
+        # nonzero internally and breaks fullgraph=True compilation).
         e = F.normalize(self.tok_emb.weight.float(), dim=-1)  # [V, d]
         cos_sim = e @ e.T                                      # [V, V]
         sq_dist = 2.0 - 2.0 * cos_sim                         # [V, V]
+        kernel = sq_dist.mul(-2.0).exp()                       # [V, V]
         V = e.shape[0]
-        mask = ~torch.eye(V, dtype=torch.bool, device=e.device)
-        return sq_dist[mask].mul(-2.0).exp().mean().log()
+        off_diag_mean = (kernel.sum() - V) / (V * (V - 1))
+        return off_diag_mean.log()
 
     def _align_loss(self) -> Tensor:
         # Soft weight tying: penalize cosine distance between each token's
