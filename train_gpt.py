@@ -759,13 +759,15 @@ class GPT(nn.Module):
         cos = F.cosine_similarity(e_hat, e_gt, dim=-1, eps=1e-8)
         return (1.0 - cos).mean()
 
-    def _recon_loss(self, targets: Tensor) -> Tensor:
-        unique_ids = torch.unique(targets)
-        e = self.tok_emb.weight[unique_ids].float()          # [K, d]
+    def _recon_loss(self) -> Tensor:
+        # CE(U(E[i]), i) for all vocab tokens. Using all tokens avoids
+        # torch.unique which has dynamic output shape incompatible with fullgraph=True.
+        E = self.tok_emb.weight.float()                      # [V, d]
         W = self._embed_output_matrix().float()              # [V, d]
-        logits = F.linear(e, W)                              # [K, V]
+        logits = F.linear(E, W)                              # [V, V]
         logits = self.logit_softcap * torch.tanh(logits / self.logit_softcap)
-        return F.cross_entropy(logits, unique_ids, reduction="mean")
+        ids = torch.arange(E.shape[0], device=E.device)
+        return F.cross_entropy(logits, ids, reduction="mean")
 
     def _uniform_loss(self) -> Tensor:
         # Wang & Isola (2020) uniformity loss on the unit hypersphere.
@@ -792,7 +794,7 @@ class GPT(nn.Module):
         if self.embed_loss_lambda > 0.0:
             total = total + self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
         if self.recon_loss_beta > 0.0:
-            total = total + self.recon_loss_beta * self._recon_loss(targets)
+            total = total + self.recon_loss_beta * self._recon_loss()
         if self.uniform_loss_gamma > 0.0:
             total = total + self.uniform_loss_gamma * self._uniform_loss()
         return total
@@ -1183,7 +1185,7 @@ def main() -> None:
                     log0(f"step:{step} lambda:{lam:.4f} ce:{_pre_update_ce:.4f} embed_only:True emb_norm:{emb_norm:.4f}")
             if args.recon_loss_beta > 0.0 and should_log_train:
                 with torch.no_grad():
-                    recon_v = base_model._recon_loss(y.reshape(-1)).item()
+                    recon_v = base_model._recon_loss().item()
                 beta = args.recon_loss_beta
                 recon_frac = (beta * recon_v) / (train_loss.item() + 1e-8)
                 log0(f"step:{step} beta:{beta:.4f} recon:{recon_v:.4f} recon_frac:{recon_frac:.3f}")
