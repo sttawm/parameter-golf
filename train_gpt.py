@@ -801,9 +801,9 @@ class GPT(nn.Module):
         targets = target_ids.reshape(-1)
         _, logits = self._get_logits(input_ids)
         ce_loss = F.cross_entropy(logits.float(), targets, reduction="mean")
+        if not self.training:
+            return ce_loss  # eval always returns CE so val_bpb is meaningful
         if self.embed_loss_only:
-            if not self.training:
-                return ce_loss  # eval always reports CE so val_bpb is meaningful
             self._embed_only_train_ce = ce_loss.detach()  # free: logits already computed
             return self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
         total = ce_loss
