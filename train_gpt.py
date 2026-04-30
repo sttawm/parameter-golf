@@ -1144,7 +1144,8 @@ def main() -> None:
                     embed_frac = (lam * emb_v) / (ce_v + lam * emb_v) if (ce_v + lam * emb_v) > 0 else 0.0
                     log0(f"step:{step} lambda:{lam:.4f} ce:{ce_v:.4f} embed:{emb_v:.4f} embed_frac:{embed_frac:.3f}")
                 else:
-                    log0(f"step:{step} lambda:{lam:.4f} ce:{_pre_update_ce:.4f} embed_only:True")
+                    emb_norm = base_model.tok_emb.weight.norm(dim=1).mean().item()
+                    log0(f"step:{step} lambda:{lam:.4f} ce:{_pre_update_ce:.4f} embed_only:True emb_norm:{emb_norm:.4f}")
 
         # Needed to sync whether we've reached the wallclock cap.
         reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
