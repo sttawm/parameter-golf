@@ -33,7 +33,6 @@ run() {
     echo "--- Done: ${run_id} ---"
 }
 
-run "tied"   TIE_EMBEDDINGS=1
 run "untied" TIE_EMBEDDINGS=0
 
 echo ""
