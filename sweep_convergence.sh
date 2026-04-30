@@ -21,7 +21,7 @@ run() {
         ITERATIONS=200 \
         MAX_WALLCLOCK_SECONDS=0 \
         TRAIN_LOG_EVERY=5 \
-        VAL_LOSS_EVERY=0 \
+        VAL_LOSS_EVERY=50 \
         TIE_EMBEDDINGS=1 \
         "$@" \
         torchrun --nproc_per_node="${GPUS}" train_gpt.py
