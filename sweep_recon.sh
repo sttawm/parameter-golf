@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Reconstruction loss sweep: CE(U(E[i]), i) as auxiliary loss.
-# Untied weights, β=0/0.01/0.05/0.2, single seed, full 10-minute runs.
+# Untied weights, β=0.01/0.05/0.2, single seed, full 10-minute runs.
+# Baseline (β=0) is available from existing convu_*_lam0_* logs.
 #
 # Usage: bash sweep_recon.sh
 
@@ -29,7 +30,6 @@ run() {
     echo "--- Done: ${run_id} ---"
 }
 
-run "b0"    RECON_LOSS_BETA=0.0
 run "b01"   RECON_LOSS_BETA=0.01
 run "b05"   RECON_LOSS_BETA=0.05
 run "b0p2"  RECON_LOSS_BETA=0.2
