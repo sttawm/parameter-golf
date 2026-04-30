@@ -767,15 +767,16 @@ class GPT(nn.Module):
         logits = self.logit_softcap * torch.tanh(logits / self.logit_softcap)
         return F.cross_entropy(logits, unique_ids, reduction="mean")
 
-    def _uniform_loss(self, num_samples: int = 128) -> Tensor:
+    def _uniform_loss(self) -> Tensor:
         # Wang & Isola (2020) uniformity loss on the unit hypersphere.
-        # Minimizing this spreads token embeddings apart, preventing collapse.
-        # Value is always ≤ 0: 0 = total collapse, −∞ = maximally spread.
-        E = self.tok_emb.weight.float()
-        idx = torch.randperm(E.shape[0], device=E.device)[:num_samples]
-        e = F.normalize(E[idx], dim=-1)                      # [K, d]
-        sq_dist = 2.0 - 2.0 * (e @ e.T)                     # [K, K], ||e_i-e_j||²
-        mask = ~torch.eye(num_samples, dtype=torch.bool, device=e.device)
+        # Uses all vocab tokens; for unit vectors sq_dist = 2*(1 - cos),
+        # so this is equivalent to a cosine-distance-based spread loss.
+        # Value ≤ 0: 0 = total collapse, more negative = more spread.
+        e = F.normalize(self.tok_emb.weight.float(), dim=-1)  # [V, d]
+        cos_sim = e @ e.T                                      # [V, V]
+        sq_dist = 2.0 - 2.0 * cos_sim                         # [V, V]
+        V = e.shape[0]
+        mask = ~torch.eye(V, dtype=torch.bool, device=e.device)
         return sq_dist[mask].mul(-2.0).exp().mean().log()
 
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
