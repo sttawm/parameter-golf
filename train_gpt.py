@@ -760,6 +760,7 @@ class GPT(nn.Module):
         if self.embed_loss_only:
             if not self.training:
                 return ce_loss  # eval always reports CE so val_bpb is meaningful
+            self._embed_only_train_ce = ce_loss.detach()  # free: logits already computed
             return self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
         if self.embed_loss_lambda <= 0.0:
             return ce_loss
@@ -1093,10 +1094,15 @@ def main() -> None:
         _pre_update_emb: float | None = None
         cutoff_active = args.embed_loss_cutoff_step > 0 and (step + 1) > args.embed_loss_cutoff_step
         if args.embed_loss_lambda > 0.0 and not cutoff_active:
-            with torch.no_grad():
-                ce_l, emb_l = base_model.loss_components(x, y)
-            _pre_update_ce = ce_l.item()
-            _pre_update_emb = emb_l.item()
+            if args.embed_loss_only:
+                # CE was cached in forward() at no extra cost (logits already computed)
+                _pre_update_ce = base_model._embed_only_train_ce.item()
+                _pre_update_emb = None
+            else:
+                with torch.no_grad():
+                    ce_l, emb_l = base_model.loss_components(x, y)
+                _pre_update_ce = ce_l.item()
+                _pre_update_emb = emb_l.item()
 
         frac = min(step / args.muon_momentum_warmup_steps, 1.0) if args.muon_momentum_warmup_steps > 0 else 1.0
         muon_momentum = (1 - frac) * args.muon_momentum_warmup_start + frac * args.muon_momentum
@@ -1133,9 +1139,12 @@ def main() -> None:
             )
             if _pre_update_ce is not None:
                 lam = args.embed_loss_lambda
-                ce_v, emb_v = _pre_update_ce, _pre_update_emb
-                embed_frac = (lam * emb_v) / (ce_v + lam * emb_v) if (ce_v + lam * emb_v) > 0 else 0.0
-                log0(f"step:{step} lambda:{lam:.4f} ce:{ce_v:.4f} embed:{emb_v:.4f} embed_frac:{embed_frac:.3f}")
+                if _pre_update_emb is not None:
+                    ce_v, emb_v = _pre_update_ce, _pre_update_emb
+                    embed_frac = (lam * emb_v) / (ce_v + lam * emb_v) if (ce_v + lam * emb_v) > 0 else 0.0
+                    log0(f"step:{step} lambda:{lam:.4f} ce:{ce_v:.4f} embed:{emb_v:.4f} embed_frac:{embed_frac:.3f}")
+                else:
+                    log0(f"step:{step} lambda:{lam:.4f} ce:{_pre_update_ce:.4f} embed_only:True")
 
         # Needed to sync whether we've reached the wallclock cap.
         reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms

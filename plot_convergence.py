@@ -15,10 +15,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 train_re  = re.compile(r"step:(\d+)/\d+ train_loss:([\d.]+)")
-val_re    = re.compile(r"^step:(\d+)/\d+ val_loss:[\d.]+ val_bpb:([\d.]+)")
+val_re    = re.compile(r"^step:(\d+)/\d+ val_loss:([\d.]+)")
 comps_re  = re.compile(r"step:(\d+) lambda:[\d.]+ ce:([\d.]+)")
-lambda_re   = re.compile(r"embed_loss_lambda:([\d.]+)")
-only_re     = re.compile(r"embed_loss_only:(True|False|0|1)")
+lambda_re = re.compile(r"embed_loss_lambda:([\d.]+)")
+only_re   = re.compile(r"embed_loss_only:(True|False|0|1)")
 
 
 def parse_log(path: Path) -> tuple[str, dict[int, float], dict[int, float]]:
@@ -39,7 +39,7 @@ def parse_log(path: Path) -> tuple[str, dict[int, float], dict[int, float]]:
                 continue
             m = val_re.match(line)
             if m:
-                val[int(m.group(1))] = float(m.group(2))
+                val[int(m.group(1))] = float(m.group(2))  # val_loss = CE in nats
                 continue
             m = comps_re.search(line)
             if m:
@@ -107,8 +107,8 @@ def main(paths: list[Path]) -> None:
             s = sorted(cr); ax_ce.plot(s, [cr[x] for x in s], color=color, linewidth=0.5, alpha=0.35)
 
     for ax, ylabel, title in [
-        (ax_val, "val_bpb",  "val_bpb vs step"),
-        (ax_ce,  "CE loss",  "Train CE loss vs step"),
+        (ax_val, "CE loss (nats)", "Val CE loss vs step"),
+        (ax_ce,  "CE loss (nats)", "Train CE loss vs step"),
     ]:
         ax.set_xlabel("Step", fontsize=11)
         ax.set_ylabel(ylabel, fontsize=11)
