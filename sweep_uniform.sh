@@ -30,7 +30,6 @@ run() {
 }
 
 for SEED in 1337 42; do
-    run "g0_s${SEED}"    UNIFORM_LOSS_GAMMA=0.0  SEED=${SEED}
     run "g001_s${SEED}"  UNIFORM_LOSS_GAMMA=0.01 SEED=${SEED}
     run "g01_s${SEED}"   UNIFORM_LOSS_GAMMA=0.1  SEED=${SEED}
     run "g1_s${SEED}"    UNIFORM_LOSS_GAMMA=1.0  SEED=${SEED}
