@@ -92,6 +92,7 @@ class Hyperparameters:
     embed_loss_only: bool = bool(int(os.environ.get("EMBED_LOSS_ONLY", "0")))
     recon_loss_beta: float = float(os.environ.get("RECON_LOSS_BETA", "0.0"))
     uniform_loss_gamma: float = float(os.environ.get("UNIFORM_LOSS_GAMMA", "0.0"))
+    align_loss_alpha: float = float(os.environ.get("ALIGN_LOSS_ALPHA", "0.0"))
 
 # -----------------------------
 # MUON OPTIMIZER 
@@ -672,6 +673,7 @@ class GPT(nn.Module):
         embed_loss_only: bool = False,
         recon_loss_beta: float = 0.0,
         uniform_loss_gamma: float = 0.0,
+        align_loss_alpha: float = 0.0,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -685,6 +687,7 @@ class GPT(nn.Module):
         self.embed_loss_only = embed_loss_only
         self.recon_loss_beta = recon_loss_beta
         self.uniform_loss_gamma = uniform_loss_gamma
+        self.align_loss_alpha = align_loss_alpha
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
@@ -781,6 +784,15 @@ class GPT(nn.Module):
         mask = ~torch.eye(V, dtype=torch.bool, device=e.device)
         return sq_dist[mask].mul(-2.0).exp().mean().log()
 
+    def _align_loss(self) -> Tensor:
+        # Soft weight tying: penalize cosine distance between each token's
+        # input embedding E[i] and output weight W[i]. Encourages the model
+        # to share input/output geometry, but lets CE override when beneficial.
+        # Range [0, 2]; expected value ~1 at random init (orthogonal unit vecs).
+        E = F.normalize(self.tok_emb.weight.float(), dim=-1)
+        W = F.normalize(self._embed_output_matrix().float(), dim=-1)
+        return (1.0 - (E * W).sum(dim=-1)).mean()
+
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         targets = target_ids.reshape(-1)
         _, logits = self._get_logits(input_ids)
@@ -797,6 +809,8 @@ class GPT(nn.Module):
             total = total + self.recon_loss_beta * self._recon_loss()
         if self.uniform_loss_gamma > 0.0:
             total = total + self.uniform_loss_gamma * self._uniform_loss()
+        if self.align_loss_alpha > 0.0:
+            total = total + self.align_loss_alpha * self._align_loss()
         return total
 
     @torch.no_grad()
@@ -927,6 +941,7 @@ def main() -> None:
         embed_loss_only=args.embed_loss_only,
         recon_loss_beta=args.recon_loss_beta,
         uniform_loss_gamma=args.uniform_loss_gamma,
+        align_loss_alpha=args.align_loss_alpha,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -1014,6 +1029,7 @@ def main() -> None:
     log0(f"embed_loss_lambda:{args.embed_loss_lambda} embed_loss_l2:{args.embed_loss_l2} embed_loss_topk:{args.embed_loss_topk} embed_loss_cutoff_step:{args.embed_loss_cutoff_step} embed_loss_only:{args.embed_loss_only}")
     log0(f"recon_loss_beta:{args.recon_loss_beta}")
     log0(f"uniform_loss_gamma:{args.uniform_loss_gamma}")
+    log0(f"align_loss_alpha:{args.align_loss_alpha}")
 
     # -----------------------------
     # DATA LOADER & MODEL WARMUP
@@ -1195,6 +1211,12 @@ def main() -> None:
                     emb_norm = base_model.tok_emb.weight.norm(dim=1).mean().item()
                 gamma = args.uniform_loss_gamma
                 log0(f"step:{step} gamma:{gamma:.4f} uniform:{unif_v:.4f} emb_norm:{emb_norm:.4f}")
+            if args.align_loss_alpha > 0.0 and should_log_train:
+                with torch.no_grad():
+                    align_v = base_model._align_loss().item()
+                    emb_norm = base_model.tok_emb.weight.norm(dim=1).mean().item()
+                alpha = args.align_loss_alpha
+                log0(f"step:{step} alpha:{alpha:.4f} align:{align_v:.4f} emb_norm:{emb_norm:.4f}")
 
         # Needed to sync whether we've reached the wallclock cap.
         reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
