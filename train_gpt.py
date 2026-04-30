@@ -1190,8 +1190,9 @@ def main() -> None:
             if args.uniform_loss_gamma > 0.0 and should_log_train:
                 with torch.no_grad():
                     unif_v = base_model._uniform_loss().item()
+                    emb_norm = base_model.tok_emb.weight.norm(dim=1).mean().item()
                 gamma = args.uniform_loss_gamma
-                log0(f"step:{step} gamma:{gamma:.4f} uniform:{unif_v:.4f}")
+                log0(f"step:{step} gamma:{gamma:.4f} uniform:{unif_v:.4f} emb_norm:{emb_norm:.4f}")
 
         # Needed to sync whether we've reached the wallclock cap.
         reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
