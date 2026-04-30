@@ -805,7 +805,10 @@ class GPT(nn.Module):
             return ce_loss  # eval always returns CE so val_bpb is meaningful
         if self.embed_loss_only:
             self._embed_only_train_ce = ce_loss.detach()  # free: logits already computed
-            return self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
+            total = self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
+            if self.uniform_loss_gamma > 0.0:
+                total = total + self.uniform_loss_gamma * self._uniform_loss()
+            return total
         total = ce_loss
         if self.embed_loss_lambda > 0.0:
             total = total + self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
