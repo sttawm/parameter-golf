@@ -17,11 +17,13 @@ import numpy as np
 train_re  = re.compile(r"step:(\d+)/\d+ train_loss:([\d.]+)")
 val_re    = re.compile(r"^step:(\d+)/\d+ val_loss:[\d.]+ val_bpb:([\d.]+)")
 comps_re  = re.compile(r"step:(\d+) lambda:[\d.]+ ce:([\d.]+)")
-lambda_re = re.compile(r"embed_loss_lambda:([\d.]+)")
+lambda_re   = re.compile(r"embed_loss_lambda:([\d.]+)")
+only_re     = re.compile(r"embed_loss_only:(True|False|0|1)")
 
 
-def parse_log(path: Path) -> tuple[float, dict[int, float], dict[int, float]]:
+def parse_log(path: Path) -> tuple[str, dict[int, float], dict[int, float]]:
     lam = 0.0
+    only = False
     ce: dict[int, float] = {}
     val: dict[int, float] = {}
     with open(path, encoding="utf-8") as f:
@@ -30,6 +32,10 @@ def parse_log(path: Path) -> tuple[float, dict[int, float], dict[int, float]]:
             m = lambda_re.search(line)
             if m:
                 lam = float(m.group(1))
+                continue
+            m = only_re.search(line)
+            if m:
+                only = m.group(1) in ("1", "True")
                 continue
             m = val_re.match(line)
             if m:
@@ -44,7 +50,8 @@ def parse_log(path: Path) -> tuple[float, dict[int, float], dict[int, float]]:
                 step = int(m.group(1))
                 if step not in ce:
                     ce[step] = float(m.group(2))
-    return lam, ce, val
+    key = "embed-only" if only else str(lam)
+    return key, ce, val
 
 
 def avg_over_seeds(runs: list[dict]) -> tuple[list[int], list[float]]:
@@ -59,10 +66,13 @@ def avg_over_seeds(runs: list[dict]) -> tuple[list[int], list[float]]:
 
 
 def main(paths: list[Path]) -> None:
-    groups: dict[float, list[tuple]] = defaultdict(list)
+    groups: dict[str, list[tuple]] = defaultdict(list)
     for p in paths:
-        lam, ce, val = parse_log(p)
-        groups[lam].append((ce, val))
+        key, ce, val = parse_log(p)
+        groups[key].append((ce, val))
+
+    def sort_key(k):
+        return (1, 0) if k == "embed-only" else (0, float(k))
 
     colors = plt.cm.tab10.colors
     fig, (ax_val, ax_ce) = plt.subplots(1, 2, figsize=(13, 5),
@@ -70,11 +80,16 @@ def main(paths: list[Path]) -> None:
     fig.suptitle("Early convergence (200 steps, tied, avg over 2 seeds)",
                  fontsize=13, fontweight="bold")
 
-    for i, lam in enumerate(sorted(groups)):
-        runs = groups[lam]
+    for i, key in enumerate(sorted(groups, key=sort_key)):
+        runs = groups[key]
         n = len(runs)
         color = colors[i]
-        label = f"λ={lam} (n={n})" if lam > 0 else f"baseline (n={n})"
+        if key == "embed-only":
+            label = f"embed-only λ=0.1 (n={n})"
+        elif float(key) == 0.0:
+            label = f"baseline (n={n})"
+        else:
+            label = f"λ={key} (n={n})"
 
         ce_runs  = [r[0] for r in runs]
         val_runs = [r[1] for r in runs]

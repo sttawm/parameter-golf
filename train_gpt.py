@@ -89,6 +89,7 @@ class Hyperparameters:
     embed_loss_l2: bool = bool(int(os.environ.get("EMBED_LOSS_L2", "0")))
     embed_loss_topk: int = int(os.environ.get("EMBED_LOSS_TOPK", "0"))
     embed_loss_cutoff_step: int = int(os.environ.get("EMBED_LOSS_CUTOFF_STEP", "0"))
+    embed_loss_only: bool = bool(int(os.environ.get("EMBED_LOSS_ONLY", "0")))
 
 # -----------------------------
 # MUON OPTIMIZER 
@@ -666,6 +667,7 @@ class GPT(nn.Module):
         embed_loss_lambda: float = 0.0,
         embed_loss_l2: bool = False,
         embed_loss_topk: int = 0,
+        embed_loss_only: bool = False,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -676,6 +678,7 @@ class GPT(nn.Module):
         self.embed_loss_lambda = embed_loss_lambda
         self.embed_loss_l2 = embed_loss_l2
         self.embed_loss_topk = embed_loss_topk
+        self.embed_loss_only = embed_loss_only
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
@@ -753,6 +756,8 @@ class GPT(nn.Module):
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         targets = target_ids.reshape(-1)
         _, logits = self._get_logits(input_ids)
+        if self.embed_loss_only:
+            return self.embed_loss_lambda * self._embed_aux_loss(logits, targets)
         ce_loss = F.cross_entropy(logits.float(), targets, reduction="mean")
         if self.embed_loss_lambda <= 0.0:
             return ce_loss
@@ -883,6 +888,7 @@ def main() -> None:
         embed_loss_lambda=args.embed_loss_lambda,
         embed_loss_l2=args.embed_loss_l2,
         embed_loss_topk=args.embed_loss_topk,
+        embed_loss_only=args.embed_loss_only,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -967,7 +973,7 @@ def main() -> None:
         f"max_wallclock_seconds:{args.max_wallclock_seconds:.3f}"
     )
     log0(f"seed:{args.seed}")
-    log0(f"embed_loss_lambda:{args.embed_loss_lambda} embed_loss_l2:{args.embed_loss_l2} embed_loss_topk:{args.embed_loss_topk} embed_loss_cutoff_step:{args.embed_loss_cutoff_step}")
+    log0(f"embed_loss_lambda:{args.embed_loss_lambda} embed_loss_l2:{args.embed_loss_l2} embed_loss_topk:{args.embed_loss_topk} embed_loss_cutoff_step:{args.embed_loss_cutoff_step} embed_loss_only:{args.embed_loss_only}")
 
     # -----------------------------
     # DATA LOADER & MODEL WARMUP
