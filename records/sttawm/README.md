@@ -37,7 +37,7 @@ $$
 Our auxiliary embedding loss is then defined using cosine similarity:
 
 $$
-L_{\mathrm{embed}} = 1 - \frac{\hat e^\top e_{\mathrm{gt}}}{|\hat e| \cdot |e_{\mathrm{gt}}|}.
+L_{\mathrm{embed}} = 1 - \frac{\hat e^\top e_{\mathrm{gt}}}{|\hat e| , |e_{\mathrm{gt}}|}.
 $$
 
 The full training objective is
