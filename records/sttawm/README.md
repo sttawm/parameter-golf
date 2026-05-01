@@ -62,12 +62,12 @@ We hypothesized that this extra term might help improve the efficiency of traini
 
 <img width="1335" height="581" alt="valb_chart_no_ws" src="https://github.com/user-attachments/assets/64c5a5c6-4e11-478c-b35a-816708a94835" />
 
-*Figure 2. Our extra loss terms leads to lower val_bpb after 10 minutes on 1X H100 SFX.*
+*Figure 2. Our extra loss term leads to lower val_bpb after 10 minutes on 1X H100 SFX.*
 
 
 ### Next Experiment
 
-To better unstand the results, we wanted to see if our $L_{\mathrm{embed}}$ correlates at all with $L_{\mathrm{CE}}$. Intuitively, it should, since _big_ and _large_ tend to be close in embedding space and in their next-token prediction probabilities.
+To better understand the results, we wanted to see if our $L_{\mathrm{embed}}$ correlates at all with $L_{\mathrm{CE}}$. Intuitively, it should, since _big_ and _large_ tend to be close in embedding space and in their next-token prediction probabilities.
 
 So, we ran an experiment where we **completely replace cross-entropy loss with our embedding loss**.
 
@@ -112,7 +112,7 @@ However, the performance of the two models is very close, and it's difficult to 
 
 *Figure 6. Despite avoiding collapse of the embedding-signal, the embedding-based loss term does not seem to improve training performance.*
 
- Indeed, it seems are results were not significant!
+ Indeed, it seems our results were not significant!
 
 ## Conclusions
-We weren't able to beat the baseline by changing the loss. However, we were able to preserve the signal of our embedding-loss by biasing tokens to be uniformly distributed throughout the embedding space. And, we were able to demonstrate that a pure embedding-base loss correlates well with cross-entropy loss for next-token prediction.
+We weren't able to beat the baseline by changing the loss. However, we were able to preserve the signal of our embedding-loss by biasing tokens to be uniformly distributed throughout the embedding space. And, we were able to demonstrate that a pure embedding-based loss correlates well with cross-entropy loss for next-token prediction.
