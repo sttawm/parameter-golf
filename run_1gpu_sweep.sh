@@ -18,7 +18,7 @@ run() {
     echo "=== Starting: ${run_id} ==="
     env \
         RUN_ID="${run_id}" \
-        ITERATIONS=13000 \
+        ITERATIONS=2000 \
         MAX_WALLCLOCK_SECONDS=0 \
         TRAIN_LOG_EVERY=100 \
         VAL_LOSS_EVERY=1000 \
