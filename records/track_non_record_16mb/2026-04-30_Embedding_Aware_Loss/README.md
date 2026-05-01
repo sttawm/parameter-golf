@@ -2,11 +2,11 @@
 Cross-entropy loss explicitly rewards the single ground-truth token per training sample. Can we improve training by also rewarding similar tokens (with respect to the embedding space)?
 
 # Answer
-Per wall-clock time, e.g. 10 minutes, **no**, not in our experiments. 
+**No**, at least not in our experiments. 
 
-But per step count, **yes, slightly**!
+Nonetheless, we were able to show that a purely embedding-based loss correlates well with standard cross-entropy loss.
 
-Below, we explain our tests and methodology.
+Below, we explain our experiments and methodology.
 
 ## Introduction
 
@@ -37,7 +37,7 @@ $$
 Our auxiliary embedding loss is then defined using cosine similarity:
 
 $$
-L_{\mathrm{embed}} = 1 - \frac{\hat e^\top e_{\mathrm{gt}}}{|\hat e| , |e_{\mathrm{gt}}|}.
+L_{\mathrm{embed}} = 1 - \frac{\hat e^\top e_{\mathrm{gt}}}{|\hat e| \cdot |e_{\mathrm{gt}}|}.
 $$
 
 The full training objective is
@@ -58,7 +58,7 @@ We hypothesized that this extra term might help improve the efficiency of traini
 
 <img width="487" height="612" alt="Screenshot 2026-04-30 at 2 15 39 PM" src="https://github.com/user-attachments/assets/6f8e7df0-f1ce-463e-8ad1-73f3435cec46" />
 
-*Figure 1. Our extra loss term did not lead to quicker convergence. Note that the lambda parameter is the weight given to our embedding loss term (see above). A lambda of 0.0 is equivalent to cross-entropy. Higher lambdas apply greater weight to our embedding loss term. These were run for 10 minutes on 1 H100 SXM.*
+*Figure 1. Our extra loss term did not lead to quicker convergence.*
 
 <img width="1335" height="581" alt="valb_chart_no_ws" src="https://github.com/user-attachments/assets/64c5a5c6-4e11-478c-b35a-816708a94835" />
 
@@ -71,7 +71,7 @@ To better unstand the results, we wanted to see if our $L_{\mathrm{embed}}$ corr
 
 So, we ran an experiment where we **completely replace cross-entropy loss with our embedding loss**.
 
-However, we see immediate collapse in this case. Likely the model learned to assign the same embedding to every term in order to game the loss function.
+However, we see immediate collapse in this case; likely the model learned to assign the same embedding to every term in order to game the loss function.
 
 
 <img width="1789" height="596" alt="collapse_plot" src="https://github.com/user-attachments/assets/0994a0ba-2900-4849-90b5-92d876892068" />
@@ -85,29 +85,34 @@ Since the embedding loss collapses, we try to find a way to preserve its signal.
 
 Now, we add **another loss term**: $L_{\mathrm{uniform}}$; to avoid collapse of the embedding-space, we pressure the model to keep its embeddings uniformly distributed. 
 
-Formally, adapter from Wang & Isola (2020):
+Formally, adapted from Wang & Isola (2020):
 
 $$\mathcal{L}{\text{uniform}} = \log \frac{1}{V(V-1)} \sum{i \neq j} \exp!\left(-2 \left|\hat{e}_i - \hat{e}_j\right|^2\right)$$
 
-And it helps! We don't get immediate collapse of the embedding space. The embedding-loss signal is preserved, and as a result, we see that **without a CE loss** we are still able to **decrease the CE loss**. Essentially, we've found a (weak) surrogate for the CE loss, at least in early training. However, it's a _weak_ surrogate for CE loss. As we can see below, training with CE loss directly still yields quicker convergence. 
+And it helps! We don't get immediate collapse of the embedding space! The embedding-loss signal is preserved, and as a result, we see that **without a CE loss** we are still able to **decrease the CE loss**. Essentially, we've found a (weak) surrogate for the CE loss, at least in early training. However, it's only a _weak_ surrogate for CE loss, and as we can see below, directly training with CE loss still yields quicker convergence. 
 
 <img width="2629" height="596" alt="eu_sweep_plot_goo" src="https://github.com/user-attachments/assets/5179009c-10f9-48c6-aa38-4f984d417cae" />
 
-*Figure 4. We're able to significantly lower CE loss without using CE loss in our objective; instead our loss encourages that predictions are **closs to ground truth tokens in embedding space**, and we pressure the embedding space to be uniformly distributed, to **avoid collapse**.*
+*Figure 4. We're able to significantly lower CE loss without using CE loss in our objective; instead our loss encourages predicted tokens to be **close to ground truth tokens in embedding space**, and we pressure the embedding space to be uniformly distributed to **avoid collapse**.*
 
 Now, is it possible to mix CE loss back in to get a better result, maybe a better loss geometry?
 
 ### Next Experiment
 
-Adding cross entropy loss back in, and running on 8XH100 SXM now, we see that our new loss achieves slightly better performance per steps, but is about 2x slower. 
+Adding cross entropy loss back in, and running on 8 H100-SXM GPUs now, we see that our new loss achieves slightly better performance per steps, but is about 2x slower. Note that we are not using tied embeddings. 
 
 <img width="1798" height="691" alt="8gpu_comparison" src="https://github.com/user-attachments/assets/9c986a06-601f-486d-bc53-82bad8f6c53f" />
 
 
-*Figure 5. Our loss gives slightly better performance, compared to the baseline, comparing the same number of steps. However, it's 2x slower, so performs worse after 10 minutes.*
+*Figure 5. Our loss gives slightly better performance, compared to the baseline, comparing the same number of steps. However, it's 2x slower and performs worse after 10 minutes.*
  
-However, the performance of the two models is very close, and it's difficult to say if these results are significant. To improve our confidence, we should train a few more times.
+However, the performance of the two models is very close, and it's difficult to say if these results are significant. To improve our confidence, we do three runs of each on 1 H100-SFX GPU.
 
+<img width="2078" height="691" alt="1gpu_sweep_plot" src="https://github.com/user-attachments/assets/8e13f0f4-8bac-4455-9b74-3c549241c39f" />
 
+*Figure 6. Despite avoiding collapse of the embedding-signal, the embedding-based loss term does not seem to improve training performance.*
 
+ Indeed, it seems are results were not significant!
 
+## Conclusions
+We weren't able to beat the baseline by changing the loss. However, we were able to preserve the signal of our embedding-loss by biasing tokens to be uniformly distributed throughout the embedding space. And, we were able to demonstrate that a pure embedding-base loss correlates well with cross-entropy loss for next-token prediction.
