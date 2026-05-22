@@ -58,13 +58,17 @@ We investigate whether, for a fixed context, tokens with similar next-token prob
 
 We sample 500 contexts from FineWeb and take the top 100 most likely tokens. For each context, we fix the top-token $$t_{top}$$, and for every other token $$t_i$$, we calculate two numbers: the probability ratio $$p_i / p_{top}$$ and the embedding distance (cosine or L2) $$dist(t_i, t_{top})$$.
 
-Below, we plot their correlation for gpt-2 medium.
-
+Below, we plot their correlation for gpt-2 medium (tied weights) and pythia-410 (untied weights; we plot both the input and output embeddings).
 
 
 <img width="1366" height="986" alt="gpt-2-probability_embedding_distance_correlations" src="https://github.com/user-attachments/assets/c6667522-4f20-4ba1-a8bb-824fcc885e77" />
 
-*Figure 0. For gpt-2 medium, the most-likely tokens do tend to cluster together in embedding space, lending support to the motivation behind the embedding-aware loss, though the effect is modest and concentrated in the high-probability regime.*
+*Figure -1. For gpt-2 medium, the most-likely tokens do tend to cluster together in embedding space, lending support to the motivation behind the embedding-aware loss, though the effect is modest and concentrated in the high-probability regime.*
+
+<img width="1896" height="973" alt="pythia-410m-probability_embedding_distance_correlations" src="https://github.com/user-attachments/assets/1d3fbf42-1618-4805-83ca-33da62fcb5f6" />
+
+*Figure 0. For pythia-410m, using untied weights, we see that the correlations are strongest in the output embedding matrix (bottom right).*
+
 
 ### Results
 
