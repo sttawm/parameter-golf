@@ -21,6 +21,8 @@ export MAX_WALLCLOCK_SECONDS=0
 export TRAIN_LOG_EVERY=100
 export VAL_LOSS_EVERY=1000
 
+mkdir -p /workspace/parameter-golf/parameter-golf/logs
+
 echo "run_id: ${RUN_ID}"
 echo "Starting torchrun..."
 

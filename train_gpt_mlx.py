@@ -97,6 +97,7 @@ class Hyperparameters:
     # Auxiliary embedding loss. Set EMBED_LOSS_LAMBDA=0 (default) for the unmodified baseline.
     embed_loss_lambda: float = float(os.environ.get("EMBED_LOSS_LAMBDA", "0.0"))
     embed_loss_l2: bool = bool(int(os.environ.get("EMBED_LOSS_L2", "0")))
+    uniform_loss_gamma: float = float(os.environ.get("UNIFORM_LOSS_GAMMA", "0.0"))
 
     out_dir: str = os.environ.get("OUT_DIR", "logs")
 
@@ -390,7 +391,8 @@ class GPT(nn.Module):
     # - tied embeddings for the LM head (the baseline default setup)
     def __init__(self, vocab_size: int, num_layers: int, dim: int, num_heads: int, num_kv_heads: int, mlp_mult: int,
                  logit_chunk_tokens: int, logit_softcap: float, rope_base: float, tied_embed_init_std: float,
-                 qk_gain_init: float, embed_loss_lambda: float = 0.0, embed_loss_l2: bool = False):
+                 qk_gain_init: float, embed_loss_lambda: float = 0.0, embed_loss_l2: bool = False,
+                 uniform_loss_gamma: float = 0.0):
         super().__init__()
         if logit_softcap <= 0.0:
             raise ValueError(f"logit_softcap must be positive, got {logit_softcap}")
@@ -398,6 +400,7 @@ class GPT(nn.Module):
         self.logit_softcap = logit_softcap
         self.embed_loss_lambda = embed_loss_lambda  # Python float — baked into the compiled graph, not a model param
         self.embed_loss_l2 = embed_loss_l2
+        self.uniform_loss_gamma = uniform_loss_gamma
 
         self.tok_emb = nn.Embedding(vocab_size, dim)
         self.num_encoder_layers = num_layers // 2
@@ -453,6 +456,22 @@ class GPT(nn.Module):
         )
         return (1.0 - cos).mean()
 
+    def _uniform_loss(self, max_tokens: int = 512) -> mx.array:
+        # Subsample to avoid V×V memory blowup with large vocabs.
+        e = self.tok_emb.weight.astype(mx.float32)
+        V = e.shape[0]
+        if V > max_tokens:
+            idx = mx.array(np.random.choice(V, max_tokens, replace=False))
+            e = e[idx]
+            V = max_tokens
+        norms = mx.sqrt(mx.sum(e * e, axis=-1, keepdims=True) + 1e-8)
+        e = e / norms
+        cos_sim = e @ e.T
+        sq_dist = 2.0 - 2.0 * cos_sim
+        kernel = mx.exp(-2.0 * sq_dist)
+        off_diag_mean = (kernel.sum() - V) / (V * (V - 1))
+        return mx.log(off_diag_mean)
+
     def loss(self, input_ids: mx.array, target_ids: mx.array) -> mx.array:
         # Cross-entropy over flattened tokens. We keep optional logit chunking because it is a useful
         # memory knob on Macs, but the common path is chunk_tokens=0 (single matmul + CE).
@@ -462,9 +481,12 @@ class GPT(nn.Module):
             logits_proj = x @ self.tok_emb.weight.astype(x.dtype).T
             logits = self.softcap(logits_proj)
             ce_loss = nn.losses.cross_entropy(logits.astype(mx.float32), y, reduction="mean")
-            if self.embed_loss_lambda <= 0.0:
-                return ce_loss
-            return ce_loss + self.embed_loss_lambda * self._embed_aux_loss(logits, y)
+            total = ce_loss
+            if self.embed_loss_lambda > 0.0:
+                total = total + self.embed_loss_lambda * self._embed_aux_loss(logits, y)
+            if self.uniform_loss_gamma > 0.0:
+                total = total + self.uniform_loss_gamma * self._uniform_loss()
+            return total
 
         loss_sum = mx.array(0.0, dtype=mx.float32)
         embed_sum = mx.array(0.0, dtype=mx.float32)
@@ -477,9 +499,12 @@ class GPT(nn.Module):
             if self.embed_loss_lambda > 0.0:
                 embed_sum = embed_sum + self._embed_aux_loss(logits, y[s:e]) * float(e - s)
         ce_loss = loss_sum / float(n)
-        if self.embed_loss_lambda <= 0.0:
-            return ce_loss
-        return ce_loss + self.embed_loss_lambda * (embed_sum / float(n))
+        total = ce_loss
+        if self.embed_loss_lambda > 0.0:
+            total = total + self.embed_loss_lambda * (embed_sum / float(n))
+        if self.uniform_loss_gamma > 0.0:
+            total = total + self.uniform_loss_gamma * self._uniform_loss()
+        return total
 
     def loss_components(self, input_ids: mx.array, target_ids: mx.array) -> tuple[mx.array, mx.array]:
         # Returns (ce_loss, embed_loss) for logging. Uses only the fast path — call at log intervals only.
@@ -942,6 +967,7 @@ def main() -> None:
         qk_gain_init=args.qk_gain_init,
         embed_loss_lambda=args.embed_loss_lambda,
         embed_loss_l2=args.embed_loss_l2,
+        uniform_loss_gamma=args.uniform_loss_gamma,
     )
     opt = SplitOptimizers(model, args)
 
@@ -993,7 +1019,7 @@ def main() -> None:
         f"matrix_lr:{args.matrix_lr} scalar_lr:{args.scalar_lr} "
         f"muon_momentum:{args.muon_momentum} muon_steps:{args.muon_backend_steps}"
     )
-    log(f"embed_loss_lambda:{args.embed_loss_lambda} embed_loss_l2:{args.embed_loss_l2}")
+    log(f"embed_loss_lambda:{args.embed_loss_lambda} embed_loss_l2:{args.embed_loss_l2} uniform_loss_gamma:{args.uniform_loss_gamma}")
     log(f"val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path={args.tokenizer_path}")
     log(f"compute_dtype:{COMPUTE_DTYPE} compile:True")
     log(

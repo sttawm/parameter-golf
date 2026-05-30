@@ -77,7 +77,7 @@ def main(paths: list[Path]) -> None:
     colors = plt.cm.tab10.colors
     fig, (ax_val, ax_ce) = plt.subplots(1, 2, figsize=(13, 5),
                                          gridspec_kw={"wspace": 0.3})
-    fig.suptitle("Early convergence (200 steps, tied, avg over 2 seeds)",
+    fig.suptitle("Early convergence (200 steps, untied, avg over 2 seeds)",
                  fontsize=13, fontweight="bold")
 
     for i, key in enumerate(sorted(groups, key=sort_key)):
