@@ -1,0 +1,31 @@
+Re: LAMA T-REx accuracy discrepancy
+
+Hey, I looked into why our results differ so much (99.7% vs. 67%) and found a data
+leakage issue in the evaluation setup.
+
+THE PROBLEM
+
+The HuggingFace `lama/trex` dataset expands every fact into all of its supporting
+Wikipedia sentences -- so a single fact like "Prime Minister of Canada -> Canada" can
+appear as hundreds of separate examples. When you load train[:34000] and do a random
+train_test_split, different sentences for the same facts end up in both train and eval.
+We verified this: 92.3% of eval facts were already seen during training.
+
+After 3 epochs on ~3,000 repeated facts, the model simply memorizes them and scores
+near-perfectly on eval -- but it's not demonstrating factual generalization, it's an
+open-book exam.
+
+HOW TO FIX IT
+
+Two options:
+
+1. Use the pre-filtered LAMA benchmark files (from the original LAMA repo). These
+   already have exactly one sentence per fact, and the facts are unique -- no leakage
+   possible.
+
+2. De-duplicate before splitting: group by (sub_uri, obj_uri, predicate_id), keep one
+   sentence per fact, then split. This gives a fair held-out set of facts the model
+   never saw during training.
+
+With either fix, expect accuracy to drop significantly -- our result on the clean
+setup is ~67%.

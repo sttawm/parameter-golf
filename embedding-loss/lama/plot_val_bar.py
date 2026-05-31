@@ -38,6 +38,10 @@ l2_path  = LAMA_DIR / ("lama_results_l2_merged.csv"
 cos = load(cos_path, "cosine")
 l2  = load(l2_path,  "l2")
 
+# Append high-lambda runs if present
+lam20_path = LAMA_DIR / "lama_results_cosine_lam20.csv"
+cos = pd.concat([cos, load(lam20_path, "cosine")], ignore_index=True).drop_duplicates()
+
 # λ=0.0 is identical regardless of loss type — pool into a single "baseline" entry
 baseline = pd.concat([
     cos[cos["lambda"] == 0.0],
@@ -84,9 +88,10 @@ def make_label(r):
     prefix = "cos" if r["loss_type"] == "cosine" else "L2"
     return f"{prefix}  λ={r['lambda']}"
 stats["label"] = stats.apply(make_label, axis=1)
-loss_order = {"baseline": 0, "cosine": 1, "l2": 2}
-stats["_lo"] = stats["loss_type"].map(loss_order).fillna(3)
-stats = stats.sort_values(["_lo", "lambda"]).reset_index(drop=True)
+# Baseline first, then remaining bars sorted descending by mean performance
+baseline_rows = stats[stats["loss_type"] == "baseline"]
+other_rows    = stats[stats["loss_type"] != "baseline"].sort_values("mean", ascending=False)
+stats = pd.concat([baseline_rows, other_rows], ignore_index=True)
 
 N    = len(stats)
 X    = np.arange(N)
