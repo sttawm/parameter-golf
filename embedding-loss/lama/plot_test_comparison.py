@@ -26,12 +26,21 @@ try:
 except FileNotFoundError:
     eu = np.array([])
 
-# ── Order: Zero-shot, CE only, CE + Emb, Emb only ────────────────────────────
-groups = [zs_v, ce, cos1, eu]
-labels = ["Zero-shot\n(no fine-tuning)", "CE only", "CE + Emb", "Emb only*"]
-colors = ["#e0e0e0", "#f8d7da", "#a5d6a7", "#90caf9"]
+# ── Load Kronecker delta ablation ─────────────────────────────────────────────
+try:
+    df_kr = pd.read_csv(f"{LAMA_DIR}/lama_results_kronecker.csv")
+    kr_finals = df_kr[df_kr["epoch"] == "final"].dropna(subset=["test_acc"])
+    kr = kr_finals["test_acc"].values
+except FileNotFoundError:
+    kr = np.array([])
 
-fig, ax = plt.subplots(figsize=(8, 5.4))
+# ── Order: Zero-shot, CE only, CE + Emb, Emb only (cosine), Emb only (delta) ─
+groups = [zs_v, ce, cos1, eu, kr]
+labels = ["Zero-shot\n(no fine-tuning)", "CE only", "CE + Emb",
+          "Emb only*\n(cosine)", "Emb only*\n(δ-distance)"]
+colors = ["#e0e0e0", "#f8d7da", "#a5d6a7", "#90caf9", "#ce93d8"]
+
+fig, ax = plt.subplots(figsize=(9.5, 5.4))
 fig.patch.set_facecolor("white")
 
 for i, (grp, lbl, col) in enumerate(zip(groups, labels, colors)):
@@ -46,8 +55,8 @@ for i, (grp, lbl, col) in enumerate(zip(groups, labels, colors)):
             f"{m:.1%}\n(n={len(grp)})",
             ha="center", va="bottom", fontsize=9, color="#333")
 
-ax.set_xticks(range(4))
-ax.set_xticklabels(labels, fontsize=11)
+ax.set_xticks(range(5))
+ax.set_xticklabels(labels, fontsize=10)
 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0%}"))
 ax.set_ylabel("Test accuracy (LAMA T-REx)", fontsize=11)
 ax.set_title("BERT-base-uncased  ·  T-REx factual recall", fontsize=12, fontweight="bold", pad=10)

@@ -10,6 +10,7 @@ COLORS = {
     "ce":  "#f8d7da",
     "co":  "#a5d6a7",
     "eu":  "#90caf9",
+    "kr":  "#ce93d8",
     "zs":  "#e0e0e0",
 }
 
@@ -22,6 +23,10 @@ df_cos["step"]    = pd.to_numeric(df_cos["step"],     errors="coerce")
 df_eu = pd.read_csv(f"{LAMA_DIR}/lama_results_eu.csv")
 df_eu["val_acc"] = pd.to_numeric(df_eu["val_acc"], errors="coerce")
 df_eu["step"]    = pd.to_numeric(df_eu["step"],    errors="coerce")
+
+df_kr = pd.read_csv(f"{LAMA_DIR}/lama_results_kronecker.csv")
+df_kr["val_acc"] = pd.to_numeric(df_kr["val_acc"], errors="coerce")
+df_kr["step"]    = pd.to_numeric(df_kr["step"],    errors="coerce")
 
 # Zero-shot mean (all conditions start from same pretrained weights)
 zs_mean = pd.to_numeric(
@@ -46,6 +51,7 @@ def curve(df):
 ce_x, ce_mu, ce_std, ce_n = curve(df_cos[df_cos["lambda"] == 0.0])
 co_x, co_mu, co_std, co_n = curve(df_cos[df_cos["lambda"] == 1.0])
 eu_x, eu_mu, eu_std, eu_n = curve(df_eu)
+kr_x, kr_mu, kr_std, kr_n = curve(df_kr)
 
 # ── Plot ──────────────────────────────────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(5, 4))
@@ -55,6 +61,7 @@ LINE_COLORS = {
     "#f8d7da": "#c9606e",  # pastel pink → medium rose
     "#a5d6a7": "#4d9a5f",  # pastel green → medium green
     "#90caf9": "#4a88c7",  # pastel blue → medium blue
+    "#ce93d8": "#9c27b0",  # pastel purple → medium purple
 }
 
 def plot_band(ax, x, mu, std, color, label, n):
@@ -64,9 +71,10 @@ def plot_band(ax, x, mu, std, color, label, n):
 ax.axhline(zs_mean, color=COLORS["zs"], lw=1.5, linestyle="--",
            label=f"Zero-shot  ({zs_mean:.1%})", zorder=0)
 
-plot_band(ax, ce_x, ce_mu, ce_std, COLORS["ce"], "CE only",   ce_n)
-plot_band(ax, co_x, co_mu, co_std, COLORS["co"], "CE + Emb",  co_n)
-plot_band(ax, eu_x, eu_mu, eu_std, COLORS["eu"], "Emb only*", eu_n)
+plot_band(ax, ce_x, ce_mu, ce_std, COLORS["ce"], "CE only",              ce_n)
+plot_band(ax, co_x, co_mu, co_std, COLORS["co"], "CE + Emb",             co_n)
+plot_band(ax, eu_x, eu_mu, eu_std, COLORS["eu"], "Emb only* (cosine)",   eu_n)
+plot_band(ax, kr_x, kr_mu, kr_std, COLORS["kr"], "Emb only* (δ-dist)",   kr_n)
 
 ax.set_xlabel("Training step", fontsize=10)
 ax.set_ylabel("Val accuracy", fontsize=10)
@@ -77,7 +85,8 @@ ax.grid(alpha=0.2)
 ax.tick_params(labelsize=8.5)
 
 fig.text(0.5, -0.03,
-         "* Emb only uses Embedding-Similarity + Uniformity loss; no Cross-Entropy",
+         "* Emb only uses Embedding-Similarity + Uniformity loss; no Cross-Entropy\n"
+         "  δ-dist replaces cosine distance with Kronecker delta: d(i,j)=1 if i≠j, 0 otherwise",
          ha="center", fontsize=7.5, color="#888", style="italic")
 
 plt.tight_layout()
