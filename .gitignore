@@ -11,4 +11,6 @@ data/docs_selected.jsonl
 logs/
 # Large data / cache files
 *.pkl
-embedding-loss/lama/data/
+embedding-loss/lama/data/embedding_prob_data.csv
+embedding_prob_pythia_data.csv
+embedding_prob_baseline_data.csv
